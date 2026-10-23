@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="Spray Lab — браузерный симулятор граффити. Баллончик, маркер, кисть, карандаш, ластик и три вида стены.">
+  <title>Spray Lab — симулятор граффити</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230a0a0b'/%3E%3Ccircle cx='12' cy='12' r='4' fill='%23d8ff4f'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <h1>Spray Lab</h1>
+        <span class="brand-tag">граффити-студия</span>
+      </div>
+
+      <div class="top-actions">
+        <div class="wall-switch" role="group" aria-label="Тип стены">
+          <button class="wall-btn is-active" type="button" data-wall="brick">Кирпич</button>
+          <button class="wall-btn" type="button" data-wall="concrete">Бетон</button>
+          <button class="wall-btn" type="button" data-wall="night">Ночь</button>
+        </div>
+        <span class="top-divider" aria-hidden="true"></span>
+        <button id="undoBtn" class="icon-btn" type="button" title="Отменить (Ctrl+Z)" aria-label="Отменить" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>
+          </svg>
+        </button>
+        <button id="redoBtn" class="icon-btn" type="button" title="Вернуть (Ctrl+Shift+Z)" aria-label="Вернуть" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>
+          </svg>
+        </button>
+        <button id="clearBtn" class="icon-btn" type="button" title="Очистить стену (можно отменить)" aria-label="Очистить стену">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>
+          </svg>
+        </button>
+        <button id="saveBtn" class="save-btn" type="button" title="Сохранить рисунок (Ctrl+S)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>
+          </svg>
+          <span>Скачать</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="stage" id="stage">
+      <div class="canvas-wrap" id="canvasWrap" aria-label="Стена для рисования">
+        <canvas id="wall" class="wall" width="1920" height="1200"></canvas>
+        <canvas id="paint" class="layer" width="1920" height="1200"></canvas>
+        <canvas id="preview" class="layer" width="1920" height="1200"></canvas>
+        <div class="empty-hint" id="emptyHint">
+          <span class="empty-kicker">стена пуста</span>
+          <span class="empty-title">Выбери инструмент и рисуй</span>
+          <span class="empty-sub">S баллончик · M маркер · B кисть · P карандаш</span>
+        </div>
+      </div>
+    </main>
+
+    <footer class="dock" aria-label="Инструменты">
+      <div class="dock-group tools-group" role="group" aria-label="Инструмент">
+        <button class="tool is-active" type="button" data-mode="spray" title="Баллончик — S">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="8" y="9" width="8" height="11" rx="2"/><path d="M10 9V6.5h4V9"/><path d="M18.5 5h.01"/><path d="M21.5 8h.01"/><path d="M18.5 11h.01"/>
+          </svg>
+          <span>Баллончик</span>
+        </button>
+        <button class="tool" type="button" data-mode="marker" title="Маркер — M">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>
+          </svg>
+          <span>Маркер</span>
+        </button>
+        <button class="tool" type="button" data-mode="brush" title="Кисть — B">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m14.62 17.9-10.68-2.92"/>
+            <path d="M18.38 2.62a1 1 0 1 1 3 3L17.36 9.64a.5.5 0 0 0 0 .71l.94.94a2.41 2.41 0 0 1 0 3.41l-.94.94a.5.5 0 0 1-.71 0L8.35 7.35a.5.5 0 0 1 0-.71l.94-.94a2.41 2.41 0 0 1 3.41 0l.94.94a.5.5 0 0 0 .71 0z"/>
+            <path d="M9 8c-1.8 2.71-3.97 3.46-6.58 3.95a.51.51 0 0 0-.3.82l7.32 8.88a1 1 0 0 0 1.18.2C12.74 20.4 16 16.79 16 15"/>
+          </svg>
+          <span>Кисть</span>
+        </button>
+        <button class="tool" type="button" data-mode="pencil" title="Карандаш — P">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.17 6.81a1 1 0 0 0-3.98-3.98L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.63l4.35-1.32a2 2 0 0 0 .83-.5z"/>
+            <path d="m15 5 4 4"/>
+          </svg>
+          <span>Карандаш</span>
+        </button>
+        <button class="tool" type="button" data-mode="eraser" title="Ластик — E">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>
+          </svg>
+          <span>Ластик</span>
+        </button>
+      </div>
+
+      <span class="dock-sep" aria-hidden="true"></span>
+
+      <div class="dock-group colors" id="colors" role="group" aria-label="Цвет">
+        <label class="swatch swatch-custom" id="customSwatch" title="Свой цвет">
+          <input type="color" id="colorInput" value="#ff2e63" aria-label="Свой цвет">
+          <span class="swatch-inner" id="customInner">+</span>
+        </label>
+      </div>
+
+      <span class="dock-sep" aria-hidden="true"></span>
+
+      <div class="dock-group sliders">
+        <label class="slider">
+          <span class="slider-top"><span>Размер</span><span class="slider-val" id="sizeVal">32</span></span>
+          <input type="range" id="sizeInput" min="6" max="140" step="2" value="32" aria-label="Размер кисти">
+        </label>
+        <label class="slider">
+          <span class="slider-top"><span>Плотность</span><span class="slider-val" id="alphaVal">80%</span></span>
+          <input type="range" id="alphaInput" min="10" max="100" step="5" value="80" aria-label="Плотность краски">
+        </label>
+        <label class="slider" title="Стабилизация штриха: чем выше, тем ровнее линия">
+          <span class="slider-top"><span>Сглаживание</span><span class="slider-val" id="smoothVal">60%</span></span>
+          <input type="range" id="smoothInput" min="0" max="100" step="5" value="60" aria-label="Сглаживание штриха">
+        </label>
+      </div>
+    </footer>
+  </div>
+
+  <div id="cursor" class="cursor" aria-hidden="true"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
