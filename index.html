@@ -2,8 +2,8 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="description" content="Spray Lab — браузерный симулятор граффити. Баллончик, маркер, кисть, карандаш, ластик и три вида стены.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="Spray Lab — браузерный симулятор граффити. Баллончик, маркер, кисть, карандаш, заливка, ластик, зум и панорама.">
   <title>Spray Lab — симулятор граффити</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230a0a0b'/%3E%3Ccircle cx='12' cy='12' r='4' fill='%23d8ff4f'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
@@ -53,11 +53,13 @@
         <canvas id="wall" class="wall" width="1920" height="1200"></canvas>
         <canvas id="paint" class="layer" width="1920" height="1200"></canvas>
         <canvas id="preview" class="layer" width="1920" height="1200"></canvas>
-        <div class="empty-hint" id="emptyHint">
-          <span class="empty-kicker">стена пуста</span>
-          <span class="empty-title">Выбери инструмент и рисуй</span>
-          <span class="empty-sub">S баллончик · M маркер · B кисть · P карандаш</span>
-        </div>
+      </div>
+
+      <div class="zoom-bar" id="zoomBar" title="Масштаб: Ctrl + колесо мыши. Панорама: инструмент «Рука», пробел + перетаскивание или два пальца">
+        <button class="zoom-btn" id="zoomOutBtn" type="button" aria-label="Уменьшить масштаб">−</button>
+        <input type="range" id="zoomInput" min="100" max="400" step="1" value="100" aria-label="Масштаб холста">
+        <button class="zoom-btn" id="zoomInBtn" type="button" aria-label="Увеличить масштаб">+</button>
+        <button class="zoom-val" id="zoomResetBtn" type="button" title="Сбросить масштаб">100%</button>
       </div>
     </main>
 
@@ -90,11 +92,23 @@
           </svg>
           <span>Карандаш</span>
         </button>
+        <button class="tool" type="button" data-mode="fill" title="Заливка — F">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m11 7 5 5"/><path d="M19 11 8.7 21.3a2 2 0 0 1-2.8 0L2.7 18a2 2 0 0 1 0-2.8L13 5"/><path d="M2 13h16"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/>
+          </svg>
+          <span>Заливка</span>
+        </button>
         <button class="tool" type="button" data-mode="eraser" title="Ластик — E">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>
           </svg>
           <span>Ластик</span>
+        </button>
+        <button class="tool" type="button" data-mode="pan" title="Перемещение — H, пробел или два пальца">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
+          </svg>
+          <span>Рука</span>
         </button>
       </div>
 
@@ -115,15 +129,30 @@
           <input type="range" id="sizeInput" min="6" max="140" step="2" value="32" aria-label="Размер кисти">
         </label>
         <label class="slider">
-          <span class="slider-top"><span>Плотность</span><span class="slider-val" id="alphaVal">80%</span></span>
-          <input type="range" id="alphaInput" min="10" max="100" step="5" value="80" aria-label="Плотность краски">
+          <span class="slider-top"><span>Плотность</span><span class="slider-val" id="alphaVal">100%</span></span>
+          <input type="range" id="alphaInput" min="10" max="100" step="5" value="100" aria-label="Плотность краски">
         </label>
         <label class="slider" title="Стабилизация штриха: чем выше, тем ровнее линия">
-          <span class="slider-top"><span>Сглаживание</span><span class="slider-val" id="smoothVal">60%</span></span>
-          <input type="range" id="smoothInput" min="0" max="100" step="5" value="60" aria-label="Сглаживание штриха">
+          <span class="slider-top"><span>Сглаживание</span><span class="slider-val" id="smoothVal">70%</span></span>
+          <input type="range" id="smoothInput" min="0" max="100" step="5" value="70" aria-label="Сглаживание штриха">
         </label>
       </div>
     </footer>
+  </div>
+
+  <div class="splash" id="splash" role="button" tabindex="0" aria-label="Начать рисовать">
+    <div class="splash-art" aria-hidden="true">
+      <span class="splash-word splash-word-top">SPRAY</span>
+      <span class="splash-word splash-word-bottom">LAB
+        <svg class="splash-drips" viewBox="0 0 320 120" preserveAspectRatio="none">
+          <path d="M18 -20h20v72a10 10 0 0 1-20 0Z" fill="#ff2e63"/>
+          <path d="M132 -20h16v84a8 8 0 0 1-16 0Z" fill="#ff2e63"/>
+          <path d="M205 -20h12v34a6 6 0 0 1-12 0Z" fill="#ff2e63"/>
+          <path d="M245 -20h18v64a9 9 0 0 1-18 0Z" fill="#ff2e63"/>
+          <path d="M296 -20h14v46a7 7 0 0 1-14 0Z" fill="#ff2e63"/>
+        </svg>
+      </span>
+    </div>
   </div>
 
   <div id="cursor" class="cursor" aria-hidden="true"></div>

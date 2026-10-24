@@ -27,7 +27,11 @@
   const sizeVal = document.getElementById('sizeVal');
   const alphaVal = document.getElementById('alphaVal');
   const smoothVal = document.getElementById('smoothVal');
-  const emptyHint = document.getElementById('emptyHint');
+  const zoomInput = document.getElementById('zoomInput');
+  const zoomVal = document.getElementById('zoomResetBtn');
+  const zoomInBtn = document.getElementById('zoomInBtn');
+  const zoomOutBtn = document.getElementById('zoomOutBtn');
+  const splashEl = document.getElementById('splash');
   const cursorEl = document.getElementById('cursor');
   const toastEl = document.getElementById('toast');
 
@@ -47,16 +51,34 @@
     mode: 'spray',
     color: '#ff2e63',
     size: 32,
-    alpha: 0.8,
-    smooth: 0.6,
+    alpha: 1,
+    smooth: 0.7,
     wall: 'brick'
   };
 
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 4;
+  const SMOOTH_STRENGTH = 0.9;
+  const SMOOTH_LAG_BASE = 44;
+  const SMOOTH_LAG_SCALE = 1.3;
+
   const undoHistory = [];
   const redoStack = [];
+  const touchPoints = new Map();
   let drawing = null;
   let isDrawing = false;
   let activePointerId = null;
+  let strokeOutside = false;
+  let lastInside = null;
+  let pinch = null;
+  let suppressTouchDraw = false;
+  let panning = null;
+  let spaceDown = false;
+  let zoom = 1;
+  let panX = 0;
+  let panY = 0;
+  let pendingFill = null;
+  const viewBounds = { stageW: 0, stageH: 0, wrapW: 0, wrapH: 0 };
   let cursorShown = false;
   let toastTimer = 0;
 
@@ -532,6 +554,29 @@
 
   const TAU = Math.PI * 2;
 
+  function pencilWidth(rt, pressure) {
+    return Math.max(1.2, rt.size * 0.1 * (0.85 + 0.15 * pressure));
+  }
+
+  function solidDot(ctx, rt, pt) {
+    const w = pencilWidth(rt, pt.p);
+    ctx.fillStyle = rt.color;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, w / 2, 0, TAU);
+    ctx.fill();
+  }
+
+  function solidSegment(ctx, rt, a, b) {
+    ctx.strokeStyle = rt.color;
+    ctx.lineWidth = pencilWidth(rt, (a.p + b.p) * 0.5);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
   function sprayStamp(ctx, rt, x, y, pressure) {
     const rnd = rt.rng;
     const r = Math.max(2, rt.size * 0.5 * (0.72 + 0.28 * pressure));
@@ -592,109 +637,6 @@
     }
   }
 
-  function markerWidth(rt, p) {
-    return Math.max(2, rt.size * 0.42 * (0.68 + 0.32 * p));
-  }
-
-  function pencilWidth(rt, p) {
-    return Math.max(0.9, rt.size * 0.115 * (0.72 + 0.28 * p));
-  }
-
-  function eraserWidth(rt) {
-    return Math.max(6, rt.size * 0.9);
-  }
-
-  function markerDot(ctx, rt, pt) {
-    const w = markerWidth(rt, pt.p);
-    ctx.fillStyle = rt.color;
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, w / 2, 0, TAU);
-    ctx.fill();
-  }
-
-  function markerSegment(ctx, rt, a, b) {
-    ctx.strokeStyle = rt.color;
-    ctx.lineWidth = markerWidth(rt, b.p);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-
-  function pencilGrain(ctx, rt, x, y, w, n) {
-    const rnd = rt.rng;
-    for (let i = 0; i < n; i++) {
-      const ang = rnd() * TAU;
-      const dist = rnd() * w * 0.9;
-      const s = 0.35 + rnd() * 0.85;
-      ctx.fillStyle = withAlpha(rt.color, rt.alpha * (0.1 + rnd() * 0.35));
-      ctx.fillRect(x + Math.cos(ang) * dist, y + Math.sin(ang) * dist, s, s);
-    }
-  }
-
-  function pencilDot(ctx, rt, pt) {
-    const w = pencilWidth(rt, pt.p);
-    ctx.fillStyle = withAlpha(rt.color, Math.min(1, rt.alpha * 0.85));
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, Math.max(0.7, w / 2), 0, TAU);
-    ctx.fill();
-    pencilGrain(ctx, rt, pt.x, pt.y, w, 8);
-  }
-
-  function pencilSegment(ctx, rt, a, b) {
-    const w = pencilWidth(rt, (a.p + b.p) * 0.5);
-    ctx.strokeStyle = withAlpha(rt.color, Math.min(1, rt.alpha * 0.58));
-    ctx.lineWidth = Math.max(0.7, w * 0.8);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dist = Math.hypot(dx, dy);
-    const nx = dist ? -dy / dist : 0;
-    const ny = dist ? dx / dist : 0;
-    const n = Math.min(10, Math.max(1, Math.round(dist / 6)));
-    const rnd = rt.rng;
-    for (let i = 0; i < n; i++) {
-      const t = rnd();
-      const off = (rnd() - 0.5) * w * 1.4;
-      const s = 0.35 + rnd() * 0.9;
-      ctx.fillStyle = withAlpha(rt.color, rt.alpha * (0.08 + rnd() * 0.3));
-      ctx.fillRect(a.x + dx * t + nx * off, a.y + dy * t + ny * off, s, s);
-    }
-  }
-
-  function eraseDot(ctx, rt, pt) {
-    const w = eraserWidth(rt);
-    ctx.save();
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.fillStyle = '#000';
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, w / 2, 0, TAU);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function eraseSegment(ctx, rt, a, b) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = eraserWidth(rt);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-    ctx.restore();
-  }
-
   function sprayWalk(rt, a, b) {
     const dx = b.x - a.x;
     const dy = b.y - a.y;
@@ -727,12 +669,81 @@
     rt.carry = (rt.carry + dist) % step;
   }
 
+  const NIB_ANGLE = -Math.PI / 4;
+
+  function markerNib(rt, pressure) {
+    const k = 0.85 + 0.15 * pressure;
+    return {
+      len: Math.max(3.5, rt.size * 0.52 * k),
+      thick: Math.max(1.3, rt.size * 0.16 * k)
+    };
+  }
+
+  function markerStamp(ctx, rt, x, y, pressure) {
+    const nib = markerNib(rt, pressure);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(NIB_ANGLE);
+    ctx.fillStyle = rt.color;
+    ctx.fillRect(-nib.len / 2, -nib.thick / 2, nib.len, nib.thick);
+    ctx.restore();
+  }
+
+  function markerWalk(rt, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.01) {
+      markerStamp(vctx, rt, a.x, a.y, a.p);
+      return;
+    }
+    const thick = markerNib(rt, (a.p + b.p) * 0.5).thick;
+    const step = Math.max(0.55, thick * 0.45);
+    let t = step - rt.carry;
+    if (t < 0) t += step;
+    while (t <= dist) {
+      const k = t / dist;
+      markerStamp(vctx, rt, a.x + dx * k, a.y + dy * k, a.p + (b.p - a.p) * k);
+      t += step;
+    }
+    rt.carry = (rt.carry + dist) % step;
+  }
+
+  function eraserWidth(rt) {
+    return Math.max(6, rt.size * 0.9);
+  }
+
+  function eraseDot(ctx, rt, pt) {
+    const w = eraserWidth(rt);
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, w / 2, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function eraseSegment(ctx, rt, a, b) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = eraserWidth(rt);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function drawDot(rt, pt) {
     switch (rt.mode) {
       case 'spray': sprayStamp(pctx, rt, pt.x, pt.y, pt.p); break;
-      case 'marker': markerDot(vctx, rt, pt); break;
       case 'brush': brushStamp(pctx, rt, pt.x, pt.y, pt.p); break;
-      case 'pencil': pencilDot(pctx, rt, pt); break;
+      case 'marker': markerStamp(vctx, rt, pt.x, pt.y, pt.p); break;
+      case 'pencil': solidDot(vctx, rt, pt); break;
       case 'eraser': eraseDot(pctx, rt, pt); break;
     }
     rt.lastSample = pt;
@@ -742,11 +753,15 @@
   function drawSegment(rt, a, b) {
     switch (rt.mode) {
       case 'spray': sprayWalk(rt, a, b); break;
-      case 'marker': markerSegment(vctx, rt, a, b); break;
       case 'brush': brushWalk(rt, a, b); break;
-      case 'pencil': pencilSegment(pctx, rt, a, b); break;
+      case 'marker': markerWalk(rt, a, b); break;
+      case 'pencil': solidSegment(vctx, rt, a, b); break;
       case 'eraser': eraseSegment(pctx, rt, a, b); break;
     }
+  }
+
+  function usesPreview(mode) {
+    return mode === 'marker' || mode === 'pencil';
   }
 
   function emitCurve(rt, a, c, b) {
@@ -793,7 +808,7 @@
     const pts = rt.action.points;
     if (!replay) {
       const last = pts[pts.length - 1];
-      if (last && Math.abs(pt.x - last.x) < 0.2 && Math.abs(pt.y - last.y) < 0.2) return;
+      if (last && !last.br && Math.abs(pt.x - last.x) < 0.2 && Math.abs(pt.y - last.y) < 0.2) return;
       pts.push(pt);
     }
     rt.lastRaw = pt;
@@ -812,8 +827,8 @@
     const dx = pt.x - rt.stab.x;
     const dy = pt.y - rt.stab.y;
     const dist = Math.hypot(dx, dy);
-    const baseK = 1 - rt.smooth * 0.86;
-    const maxLag = 40 + rt.size * 1.2;
+    const baseK = 1 - rt.smooth * SMOOTH_STRENGTH;
+    const maxLag = SMOOTH_LAG_BASE + rt.size * SMOOTH_LAG_SCALE;
     const k = Math.max(baseK, 1 - maxLag / Math.max(dist, 0.01));
     rt.stab.x += dx * k;
     rt.stab.y += dy * k;
@@ -824,7 +839,7 @@
   function finalizeStabilizer(rt) {
     if (!rt.stab || !rt.lastRaw || rt.smooth <= 0.001) return;
     const target = rt.lastRaw;
-    const baseK = 1 - rt.smooth * 0.86;
+    const baseK = 1 - rt.smooth * SMOOTH_STRENGTH;
     for (let i = 0; i < 48; i++) {
       const dx = target.x - rt.stab.x;
       const dy = target.y - rt.stab.y;
@@ -837,6 +852,16 @@
     }
   }
 
+  function breakRuntime(rt) {
+    finalizeStabilizer(rt);
+    splineFlush(rt);
+    rt.stab = null;
+    rt.spline = null;
+    rt.lastRaw = null;
+    rt.lastSample = null;
+    rt.carry = 0;
+  }
+
   function composePreview(alpha) {
     pctx.save();
     pctx.globalAlpha = alpha;
@@ -847,10 +872,16 @@
 
   function replayStroke(action) {
     const rt = makeRuntime(action);
-    for (const pt of action.points) feedPoint(rt, pt, true);
+    for (const pt of action.points) {
+      if (pt.br) {
+        breakRuntime(rt);
+        continue;
+      }
+      feedPoint(rt, pt, true);
+    }
     finalizeStabilizer(rt);
     splineFlush(rt);
-    if (action.mode === 'marker') composePreview(action.alpha);
+    if (usesPreview(action.mode)) composePreview(action.alpha);
   }
 
   function renderAll() {
@@ -860,6 +891,10 @@
       if (action.type === 'clear') {
         pctx.clearRect(0, 0, W, H);
         vctx.clearRect(0, 0, W, H);
+        continue;
+      }
+      if (action.type === 'fill') {
+        paintFillAction(action);
         continue;
       }
       replayStroke(action);
@@ -872,13 +907,15 @@
     const action = drawing.action;
     finalizeStabilizer(drawing);
     splineFlush(drawing);
-    if (action.mode === 'marker') composePreview(action.alpha);
+    if (usesPreview(action.mode)) composePreview(action.alpha);
     previewEl.style.opacity = '1';
     undoHistory.push(action);
     redoStack.length = 0;
     drawing = null;
     isDrawing = false;
     activePointerId = null;
+    strokeOutside = false;
+    lastInside = null;
     updateUI();
   }
 
@@ -904,15 +941,176 @@
     showToast('Стена очищена — Ctrl+Z вернёт рисунок');
   }
 
+  // ---------- fill ----------
+
+  function hexRgb(hex) {
+    const v = parseInt(hex.slice(1), 16);
+    return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
+  }
+
+  function estimateFillTolerance(data, sx, sy) {
+    const si = (sy * W + sx) * 4;
+    const sr = data[si];
+    const sg = data[si + 1];
+    const sb = data[si + 2];
+    const radius = 4;
+    const x0 = Math.max(0, sx - radius);
+    const x1 = Math.min(W - 1, sx + radius);
+    const y0 = Math.max(0, sy - radius);
+    const y1 = Math.min(H - 1, sy + radius);
+    let sum = 0;
+    let sum2 = 0;
+    let count = 0;
+
+    for (let y = y0; y <= y1; y++) {
+      let i = (y * W + x0) * 4;
+      for (let x = x0; x <= x1; x++, i += 4) {
+        const dr = data[i] - sr;
+        const dg = data[i + 1] - sg;
+        const db = data[i + 2] - sb;
+        const d = Math.sqrt(dr * dr + dg * dg + db * db);
+        sum += d;
+        sum2 += d * d;
+        count++;
+      }
+    }
+
+    const mean = sum / count;
+    const sd = Math.sqrt(Math.max(0, sum2 / count - mean * mean));
+    return clamp(15 + mean * 2 + sd * 1.6, 18, 72);
+  }
+
+  function floodFillMask(srcData, paintData, sx, sy, tol, onPaint) {
+    const N = W * H;
+    const mask = new Uint8Array(N);
+    const seen = new Uint8Array(N);
+    const queue = new Int32Array(N);
+    const si = (sy * W + sx) * 4;
+    const sr = srcData[si];
+    const sg = srcData[si + 1];
+    const sb = srcData[si + 2];
+    const tol2 = tol * tol;
+    const seed = sy * W + sx;
+
+    seen[seed] = 1;
+    mask[seed] = 255;
+    let head = 0;
+    let tail = 1;
+    queue[0] = seed;
+
+    const push = (idx) => {
+      if (seen[idx]) return;
+      const a = paintData[idx * 4 + 3];
+      if (onPaint) {
+        if (a < 12) return;
+      } else if (a > 0) {
+        // Exact paint edge: paint underneath it, but never flood past the line.
+        seen[idx] = 1;
+        mask[idx] = 255;
+        return;
+      }
+      const i = idx * 4;
+      const dr = srcData[i] - sr;
+      const dg = srcData[i + 1] - sg;
+      const db = srcData[i + 2] - sb;
+      if (dr * dr + dg * dg + db * db > tol2) return;
+      seen[idx] = 1;
+      mask[idx] = 255;
+      queue[tail++] = idx;
+    };
+
+    while (head < tail) {
+      const idx = queue[head++];
+      const x = idx % W;
+      const y = (idx - x) / W;
+      if (x > 0) push(idx - 1);
+      if (x < W - 1) push(idx + 1);
+      if (y > 0) push(idx - W);
+      if (y < H - 1) push(idx + W);
+    }
+
+    return mask;
+  }
+
+  function encodeFillRuns(mask) {
+    const N = W * H;
+    const runs = [];
+
+    for (let i = 0; i < N;) {
+      if (!mask[i]) {
+        i++;
+        continue;
+      }
+      const start = i;
+      i++;
+      while (i < N && mask[i]) i++;
+      runs.push(start, i - start, 255);
+    }
+
+    return runs;
+  }
+
+  function paintFillAction(action) {
+    const { r, g, b } = hexRgb(action.color);
+    const cv = makeCanvas();
+    const cx = cv.getContext('2d');
+    const img = cx.createImageData(W, H);
+    const data = img.data;
+    const runs = action.runs;
+
+    for (let k = 0; k < runs.length; k += 3) {
+      const end = runs[k] + runs[k + 1];
+      const alpha = runs[k + 2];
+      for (let i = runs[k]; i < end; i++) {
+        const o = i * 4;
+        data[o] = r;
+        data[o + 1] = g;
+        data[o + 2] = b;
+        data[o + 3] = alpha;
+      }
+    }
+
+    cx.putImageData(img, 0, 0);
+    pctx.save();
+    if (action.under) pctx.globalCompositeOperation = 'destination-over';
+    pctx.globalAlpha = action.alpha;
+    pctx.drawImage(cv, 0, 0);
+    pctx.restore();
+  }
+
+  function applyFill(pt) {
+    const sx = clamp(Math.floor(pt.x), 0, W - 1);
+    const sy = clamp(Math.floor(pt.y), 0, H - 1);
+
+    const comp = makeCanvas();
+    const compCtx = comp.getContext('2d', { willReadFrequently: true });
+    compCtx.drawImage(wallEl, 0, 0);
+    compCtx.drawImage(paintEl, 0, 0);
+    const srcData = compCtx.getImageData(0, 0, W, H).data;
+    const paintData = pctx.getImageData(0, 0, W, H).data;
+
+    const onPaint = paintData[(sy * W + sx) * 4 + 3] >= 12;
+    const tol = onPaint ? estimateFillTolerance(srcData, sx, sy) : 150;
+    const mask = floodFillMask(srcData, paintData, sx, sy, tol, onPaint);
+    const runs = encodeFillRuns(mask);
+
+    if (!runs.length) {
+      showToast('Заливать нечего — область слишком мала');
+      return;
+    }
+
+    const action = { type: 'fill', color: state.color, alpha: state.alpha, under: !onPaint, runs };
+    undoHistory.push(action);
+    redoStack.length = 0;
+    paintFillAction(action);
+    updateUI();
+  }
+
   function updateUI() {
     undoBtn.disabled = isDrawing || undoHistory.length === 0;
     redoBtn.disabled = isDrawing || redoStack.length === 0;
     clearBtn.disabled = isDrawing;
     saveBtn.disabled = isDrawing;
-
-    const last = undoHistory[undoHistory.length - 1];
-    const isEmpty = undoHistory.length === 0 || (last && last.type === 'clear');
-    emptyHint.classList.toggle('is-hidden', !isEmpty);
   }
 
   // ---------- save ----------
@@ -943,30 +1141,210 @@
 
   // ---------- pointer input ----------
 
-  function getPoint(e) {
+  function getCanvasPoint(e) {
     const rect = wallEl.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     return {
-      x: clamp((e.clientX - rect.left) / rect.width * W, 0, W),
-      y: clamp((e.clientY - rect.top) / rect.height * H, 0, H),
+      x: (e.clientX - rect.left) / rect.width * W,
+      y: (e.clientY - rect.top) / rect.height * H,
       p: e.pointerType === 'pen' ? clamp(e.pressure || 0.5, 0.1, 1) : 0.85
     };
   }
 
+  function isInsideCanvas(pt) {
+    return pt.x >= 0 && pt.x <= W && pt.y >= 0 && pt.y <= H;
+  }
+
+  function boundaryPoint(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    let t = 1;
+    if (b.x < 0 && dx !== 0) t = Math.min(t, (0 - a.x) / dx);
+    else if (b.x > W && dx !== 0) t = Math.min(t, (W - a.x) / dx);
+    if (b.y < 0 && dy !== 0) t = Math.min(t, (0 - a.y) / dy);
+    else if (b.y > H && dy !== 0) t = Math.min(t, (H - a.y) / dy);
+    t = clamp(t, 0, 1);
+    return {
+      x: clamp(a.x + dx * t, 0, W),
+      y: clamp(a.y + dy * t, 0, H),
+      p: a.p + (b.p - a.p) * t
+    };
+  }
+
+  function edgeAnchor(pt) {
+    const dl = pt.x;
+    const dr = W - pt.x;
+    const dt = pt.y;
+    const db = H - pt.y;
+    const m = Math.min(dl, dr, dt, db);
+    if (m === dl) return { x: 0, y: pt.y, p: pt.p };
+    if (m === dr) return { x: W, y: pt.y, p: pt.p };
+    if (m === dt) return { x: pt.x, y: 0, p: pt.p };
+    return { x: pt.x, y: H, p: pt.p };
+  }
+
+  function feedPointerEvent(rt, ev) {
+    const pt = getCanvasPoint(ev);
+    if (!pt) return;
+
+    if (isInsideCanvas(pt)) {
+      if (strokeOutside) {
+        feedPoint(rt, edgeAnchor(pt), false);
+        feedPoint(rt, pt, false);
+        strokeOutside = false;
+      } else {
+        feedPoint(rt, pt, false);
+      }
+      lastInside = pt;
+      return;
+    }
+
+    if (!strokeOutside && lastInside) {
+      feedPoint(rt, boundaryPoint(lastInside, pt), false);
+      breakRuntime(rt);
+      rt.action.points.push({ br: true });
+      strokeOutside = true;
+    }
+  }
+
+  function capturePointer(id) {
+    try {
+      wrapEl.setPointerCapture(id);
+    } catch (err) { /* synthetic events */ }
+  }
+
+  function cancelStroke() {
+    if (!drawing) return;
+    drawing = null;
+    isDrawing = false;
+    activePointerId = null;
+    strokeOutside = false;
+    lastInside = null;
+    previewEl.style.opacity = '1';
+    vctx.clearRect(0, 0, W, H);
+    renderAll();
+  }
+
+  function abortForPinch() {
+    if (!drawing) return;
+    let dist = 0;
+    let prev = null;
+    for (const p of drawing.action.points) {
+      if (p.br) {
+        prev = null;
+        continue;
+      }
+      if (prev) dist += Math.hypot(p.x - prev.x, p.y - prev.y);
+      prev = p;
+    }
+    if (dist < 6) cancelStroke();
+    else finishStroke();
+  }
+
+  function startPan(e) {
+    e.preventDefault();
+    pendingFill = null;
+    measureView();
+    panning = {
+      id: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      panX,
+      panY
+    };
+    capturePointer(e.pointerId);
+    document.body.classList.add('is-panning');
+    setCursorVisible(false);
+  }
+
+  function startPinch() {
+    const pts = [...touchPoints.values()];
+    if (pts.length < 2) {
+      pinch = null;
+      return;
+    }
+    const [a, b] = pts;
+    const rect = wrapEl.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    pinch = {
+      startDist: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+      startZoom: zoom,
+      baseX: centerX - panX,
+      baseY: centerY - panY,
+      ux: ((a.x + b.x) * 0.5 - centerX) / zoom,
+      uy: ((a.y + b.y) * 0.5 - centerY) / zoom
+    };
+  }
+
+  function updatePinch() {
+    const pts = [...touchPoints.values()];
+    if (!pinch || pts.length < 2) return;
+    const [a, b] = pts;
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const cx = (a.x + b.x) * 0.5;
+    const cy = (a.y + b.y) * 0.5;
+    const next = clamp(pinch.startZoom * (dist / pinch.startDist), MIN_ZOOM, MAX_ZOOM);
+    zoom = next;
+    panX = cx - pinch.ux * next - pinch.baseX;
+    panY = cy - pinch.uy * next - pinch.baseY;
+    applyView();
+  }
+
   function onPointerDown(e) {
-    if (e.pointerType === 'touch') setCursorVisible(false);
-    else positionCursor(e);
+    if (e.pointerType === 'mouse' && (e.button === 1 || (e.button === 0 && spaceDown))) {
+      startPan(e);
+      return;
+    }
+
+    if (e.pointerType === 'touch') {
+      e.preventDefault();
+      touchPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      capturePointer(e.pointerId);
+
+      if (touchPoints.size >= 2) {
+        if (isDrawing) abortForPinch();
+        pendingFill = null;
+        if (panning) {
+          panning = null;
+          document.body.classList.remove('is-panning');
+        }
+        suppressTouchDraw = true;
+        startPinch();
+        setCursorVisible(false);
+        return;
+      }
+
+      if (suppressTouchDraw) return;
+      setCursorVisible(false);
+    } else {
+      positionCursor(e);
+    }
+
+    if (state.mode === 'pan') {
+      if (panning) return;
+      startPan(e);
+      return;
+    }
+
     if (isDrawing) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
-    const pt = getPoint(e);
+    if (state.mode === 'fill') {
+      const pt = getCanvasPoint(e);
+      if (!pt) return;
+      e.preventDefault();
+      pendingFill = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+      capturePointer(e.pointerId);
+      return;
+    }
+
+    const pt = getCanvasPoint(e);
     if (!pt) return;
     e.preventDefault();
 
     activePointerId = e.pointerId;
-    try {
-      wrapEl.setPointerCapture(e.pointerId);
-    } catch (err) { /* synthetic events */ }
+    capturePointer(e.pointerId);
 
     const action = {
       type: 'stroke',
@@ -981,14 +1359,46 @@
 
     drawing = makeRuntime(action);
     isDrawing = true;
-    if (state.mode === 'marker') previewEl.style.opacity = String(state.alpha);
+    strokeOutside = false;
+    lastInside = pt;
+    if (usesPreview(state.mode)) {
+      vctx.clearRect(0, 0, W, H);
+      previewEl.style.opacity = String(state.alpha);
+    }
     feedPoint(drawing, pt, false);
     updateUI();
   }
 
   function onPointerMove(e) {
-    if (e.pointerType !== 'touch') positionCursor(e);
+    if (panning && e.pointerId === panning.id) {
+      e.preventDefault();
+      panX = panning.panX + (e.clientX - panning.x);
+      panY = panning.panY + (e.clientY - panning.y);
+      applyView();
+      return;
+    }
+
+    if (pendingFill && e.pointerId === pendingFill.id) {
+      if (Math.hypot(e.clientX - pendingFill.x, e.clientY - pendingFill.y) > 6) {
+        pendingFill.moved = true;
+      }
+    }
+
+    if (e.pointerType === 'touch') {
+      if (touchPoints.has(e.pointerId)) {
+        touchPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      }
+      if (pinch && touchPoints.size >= 2) {
+        e.preventDefault();
+        updatePinch();
+        return;
+      }
+    } else {
+      positionCursor(e);
+    }
+
     if (!isDrawing || !drawing || e.pointerId !== activePointerId) return;
+    if (e.pointerType === 'touch' && suppressTouchDraw) return;
     e.preventDefault();
 
     let events = null;
@@ -1001,36 +1411,54 @@
     }
     if (!events || !events.length) events = [e];
 
-    for (const ev of events) {
-      const pt = getPoint(ev);
-      if (pt) feedPoint(drawing, pt, false);
-    }
-
-    if (!events.includes(e)) {
-      const pt = getPoint(e);
-      if (pt) feedPoint(drawing, pt, false);
-    }
+    for (const ev of events) feedPointerEvent(drawing, ev);
+    if (!events.includes(e)) feedPointerEvent(drawing, e);
   }
 
   function onPointerUp(e) {
+    if (panning && e.pointerId === panning.id) {
+      panning = null;
+      document.body.classList.remove('is-panning');
+      if (e.pointerType !== 'touch') {
+        positionCursor(e);
+        return;
+      }
+    }
+
+    if (pendingFill && e.pointerId === pendingFill.id) {
+      const pending = pendingFill;
+      pendingFill = null;
+      if (!pending.moved && !suppressTouchDraw && !pinch) {
+        const pt = getCanvasPoint(e);
+        if (pt && isInsideCanvas(pt)) applyFill(pt);
+      }
+    }
+
+    if (e.pointerType === 'touch') {
+      touchPoints.delete(e.pointerId);
+      if (touchPoints.size >= 2) {
+        startPinch();
+      } else {
+        pinch = null;
+        if (touchPoints.size === 0) suppressTouchDraw = false;
+      }
+    }
+
     if (!isDrawing || e.pointerId !== activePointerId) return;
     finishStroke();
     if (e.pointerType !== 'touch') positionCursor(e);
   }
 
-  function onPointerCancel(e) {
-    if (!isDrawing || e.pointerId !== activePointerId) return;
-    finishStroke();
-  }
-
   wrapEl.addEventListener('pointerdown', onPointerDown);
   wrapEl.addEventListener('pointermove', onPointerMove);
-  wrapEl.addEventListener('pointerup', onPointerUp);
-  wrapEl.addEventListener('pointercancel', onPointerCancel);
   window.addEventListener('pointerup', onPointerUp);
+  window.addEventListener('pointercancel', (e) => {
+    pendingFill = null;
+    onPointerUp(e);
+  });
 
   wrapEl.addEventListener('pointerenter', (e) => {
-    if (e.pointerType === 'touch') return;
+    if (e.pointerType === 'touch' || spaceDown) return;
     positionCursor(e);
   });
 
@@ -1038,21 +1466,31 @@
     setCursorVisible(false);
   });
 
-  window.addEventListener('blur', () => setCursorVisible(false));
+  window.addEventListener('blur', () => {
+    if (isDrawing) finishStroke();
+    panning = null;
+    pendingFill = null;
+    pinch = null;
+    touchPoints.clear();
+    suppressTouchDraw = false;
+    spaceDown = false;
+    document.body.classList.remove('is-panning', 'is-pan-ready');
+    setCursorVisible(false);
+  });
 
   // ---------- cursor ----------
 
   const CURSOR_SCALE = {
     spray: 1,
-    marker: 0.45,
+    marker: 0.52,
     brush: 0.9,
-    pencil: 0.16,
+    pencil: 0.1,
     eraser: 0.9
   };
 
   function updateCursorGeometry() {
-    const rect = wallEl.getBoundingClientRect();
-    const scale = rect.width ? rect.width / W : 0.5;
+    if (!viewBounds.wrapW) measureView();
+    const scale = viewBounds.wrapW ? viewBounds.wrapW * zoom / W : 0.5;
     const width = state.size * (CURSOR_SCALE[state.mode] || 1);
     const px = Math.max(state.mode === 'pencil' ? 8 : 10, width * scale);
     cursorEl.style.width = px + 'px';
@@ -1064,6 +1502,10 @@
 
   function positionCursor(e) {
     if (e.pointerType === 'touch') return;
+    if (state.mode === 'pan' || state.mode === 'fill') {
+      setCursorVisible(false);
+      return;
+    }
     updateCursorGeometry();
     cursorEl.style.transform = `translate(${e.clientX}px, ${e.clientY}px) translate(-50%, -50%)`;
     setCursorVisible(true);
@@ -1074,7 +1516,72 @@
     cursorEl.classList.toggle('is-visible', visible);
   }
 
-  // ---------- layout ----------
+  // ---------- zoom & layout ----------
+
+  function measureView() {
+    const sr = stageEl.getBoundingClientRect();
+    viewBounds.stageW = sr.width;
+    viewBounds.stageH = sr.height;
+    viewBounds.wrapW = wrapEl.offsetWidth;
+    viewBounds.wrapH = wrapEl.offsetHeight;
+  }
+
+  function clampPan() {
+    if (!viewBounds.wrapW) measureView();
+    const scaledW = viewBounds.wrapW * zoom;
+    const scaledH = viewBounds.wrapH * zoom;
+    const maxX = Math.max(0, (scaledW - viewBounds.stageW) / 2);
+    const maxY = Math.max(0, (scaledH - viewBounds.stageH) / 2);
+    panX = clamp(panX, -maxX, maxX);
+    panY = clamp(panY, -maxY, maxY);
+    if (zoom <= MIN_ZOOM + 0.001) {
+      panX = 0;
+      panY = 0;
+    }
+  }
+
+  function applyView() {
+    clampPan();
+    wrapEl.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    const pct = Math.round(zoom * 100);
+    const pctValue = String(pct);
+    if (zoomInput.value !== pctValue) {
+      zoomInput.value = pctValue;
+      updateRangeFill(zoomInput);
+    }
+    const label = pct + '%';
+    if (zoomVal.textContent !== label) zoomVal.textContent = label;
+    if (!panning) updateCursorGeometry();
+  }
+
+  function zoomAround(nextZoom, clientX, clientY) {
+    const z = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    if (Math.abs(z - zoom) < 0.001) return;
+    const rect = wrapEl.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const fx = clientX == null ? cx : clientX;
+    const fy = clientY == null ? cy : clientY;
+    const ratio = z / zoom;
+    const nx = fx - (fx - cx) * ratio;
+    const ny = fy - (fy - cy) * ratio;
+    panX += nx - cx;
+    panY += ny - cy;
+    zoom = z;
+    applyView();
+  }
+
+  function stageCenter() {
+    const rect = stageEl.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }
+
+  function resetView() {
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    applyView();
+  }
 
   function fitStage() {
     const cs = getComputedStyle(stageEl);
@@ -1090,13 +1597,89 @@
     }
     wrapEl.style.width = Math.max(120, Math.floor(w)) + 'px';
     wrapEl.style.height = Math.max(75, Math.floor(h)) + 'px';
-    updateCursorGeometry();
+    measureView();
+    applyView();
   }
+
+  zoomInput.addEventListener('input', () => {
+    const c = stageCenter();
+    zoomAround(Number(zoomInput.value) / 100, c.x, c.y);
+  });
+
+  zoomInBtn.addEventListener('click', () => {
+    const c = stageCenter();
+    zoomAround(zoom + 0.25, c.x, c.y);
+  });
+
+  zoomOutBtn.addEventListener('click', () => {
+    const c = stageCenter();
+    zoomAround(zoom - 0.25, c.x, c.y);
+  });
+
+  zoomVal.addEventListener('click', resetView);
+
+  stageEl.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    zoomAround(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
+  }, { passive: false });
 
   if ('ResizeObserver' in window) {
     new ResizeObserver(fitStage).observe(stageEl);
   }
   window.addEventListener('resize', fitStage);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', fitStage);
+  }
+
+  // ---------- Telegram ----------
+
+  function syncTelegramViewport(tg) {
+    const h = Math.round(tg.viewportStableHeight || tg.viewportHeight || 0);
+    if (h > 0) {
+      document.documentElement.style.setProperty('--app-height', h + 'px');
+    }
+
+    const safe = tg.safeAreaInset || {};
+    const content = tg.contentSafeAreaInset || {};
+    const setInset = (name, value) => {
+      document.documentElement.style.setProperty(name, Math.max(0, Math.round(value)) + 'px');
+    };
+    setInset('--tg-safe-top', (safe.top || 0) + (content.top || 0));
+    setInset('--tg-safe-right', (safe.right || 0) + (content.right || 0));
+    setInset('--tg-safe-bottom', (safe.bottom || 0) + (content.bottom || 0));
+    setInset('--tg-safe-left', (safe.left || 0) + (content.left || 0));
+    fitStage();
+  }
+
+  function initTelegram() {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (!tg || !tg.platform || tg.platform === 'unknown') return;
+
+    document.body.classList.add('is-telegram');
+    try { tg.ready(); } catch (err) { /* not in Telegram */ }
+    try { tg.expand(); } catch (err) { /* older client */ }
+    try { tg.setHeaderColor('#0a0a0b'); } catch (err) { /* unsupported */ }
+    try { tg.setBackgroundColor('#0a0a0b'); } catch (err) { /* unsupported */ }
+
+    syncTelegramViewport(tg);
+    if (typeof tg.onEvent === 'function') {
+      tg.onEvent('viewportChanged', () => syncTelegramViewport(tg));
+      tg.onEvent('fullscreenChanged', () => syncTelegramViewport(tg));
+    }
+  }
+
+  function loadTelegramSdk() {
+    if (window.Telegram && window.Telegram.WebApp) {
+      initTelegram();
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = 'https://telegram.org/js/telegram-web-app.js';
+    s.async = true;
+    s.onload = initTelegram;
+    document.head.appendChild(s);
+  }
 
   // ---------- colors ----------
 
@@ -1133,6 +1716,10 @@
 
   function setMode(mode) {
     state.mode = mode;
+    pendingFill = null;
+    document.body.classList.toggle('is-tool-pan', mode === 'pan');
+    document.body.classList.toggle('is-tool-fill', mode === 'fill');
+    if (mode === 'pan' || mode === 'fill') setCursorVisible(false);
     document.querySelectorAll('.tool[data-mode]').forEach((b) => {
       b.classList.toggle('is-active', b.dataset.mode === mode);
     });
@@ -1180,6 +1767,28 @@
 
   // ---------- keyboard ----------
 
+  function isTypingTarget(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || el.isContentEditable;
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || isTypingTarget(e.target)) return;
+    if (!spaceDown) {
+      spaceDown = true;
+      document.body.classList.add('is-pan-ready');
+      setCursorVisible(false);
+    }
+    e.preventDefault();
+  });
+
+  window.addEventListener('keyup', (e) => {
+    if (e.code !== 'Space') return;
+    spaceDown = false;
+    document.body.classList.remove('is-pan-ready');
+  });
+
   document.addEventListener('keydown', (e) => {
     const tag = e.target && e.target.tagName;
     if (tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -1213,7 +1822,9 @@
       case 'KeyM': setMode('marker'); break;
       case 'KeyB': setMode('brush'); break;
       case 'KeyP': setMode('pencil'); break;
+      case 'KeyF': setMode('fill'); break;
       case 'KeyE': setMode('eraser'); break;
+      case 'KeyH': setMode('pan'); break;
       default:
         if (/^Digit[1-9]$/.test(e.code)) {
           const idx = Number(e.code.slice(5)) - 1;
@@ -1231,6 +1842,32 @@
     toastTimer = setTimeout(() => toastEl.classList.remove('is-visible'), 2400);
   }
 
+  // ---------- splash ----------
+
+  let splashClosed = false;
+
+  function closeSplash() {
+    if (splashClosed || !splashEl) return;
+    splashClosed = true;
+    splashEl.classList.add('is-gone');
+    splashEl.setAttribute('aria-hidden', 'true');
+    setTimeout(() => splashEl.remove(), 650);
+  }
+
+  if (splashEl) {
+    splashEl.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      closeSplash();
+    });
+    splashEl.addEventListener('wheel', closeSplash, { passive: true });
+    splashEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        closeSplash();
+      }
+    });
+  }
+
   // ---------- init ----------
 
   fitStage();
@@ -1242,6 +1879,8 @@
   updateRangeFill(sizeInput);
   updateRangeFill(alphaInput);
   updateRangeFill(smoothInput);
+  updateRangeFill(zoomInput);
+  loadTelegramSdk();
   renderAll();
   fitStage();
 })();
