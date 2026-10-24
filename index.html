@@ -24,6 +24,21 @@
           <button class="wall-btn" type="button" data-wall="night">Ночь</button>
         </div>
         <span class="top-divider" aria-hidden="true"></span>
+        <div class="layers-wrap">
+          <button id="layersBtn" class="icon-btn layers-btn" type="button" title="Слои — L" aria-label="Слои" aria-expanded="false" aria-controls="layersPop">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/><path d="m3 17 9 5 9-5"/>
+            </svg>
+            <span class="layers-badge" id="layersBadge">3</span>
+          </button>
+          <div class="layers-pop" id="layersPop" role="dialog" aria-label="Слои" aria-hidden="true">
+            <div class="layers-pop-head">
+              <span>Слои</span>
+              <span class="layers-hint">L</span>
+            </div>
+            <div class="layers-list" id="layersList"></div>
+          </div>
+        </div>
         <button id="undoBtn" class="icon-btn" type="button" title="Отменить (Ctrl+Z)" aria-label="Отменить" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>
@@ -34,7 +49,7 @@
             <path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>
           </svg>
         </button>
-        <button id="clearBtn" class="icon-btn" type="button" title="Очистить стену (можно отменить)" aria-label="Очистить стену">
+        <button id="clearBtn" class="icon-btn" type="button" title="Очистить активный слой (можно отменить)" aria-label="Очистить активный слой">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>
           </svg>
@@ -51,7 +66,9 @@
     <main class="stage" id="stage">
       <div class="canvas-wrap" id="canvasWrap" aria-label="Стена для рисования">
         <canvas id="wall" class="wall" width="1920" height="1200"></canvas>
-        <canvas id="paint" class="layer" width="1920" height="1200"></canvas>
+        <canvas class="layer paint-layer" data-layer="0" width="1920" height="1200"></canvas>
+        <canvas class="layer paint-layer" data-layer="1" width="1920" height="1200"></canvas>
+        <canvas class="layer paint-layer" data-layer="2" width="1920" height="1200"></canvas>
         <canvas id="preview" class="layer" width="1920" height="1200"></canvas>
       </div>
 
@@ -77,13 +94,23 @@
           </svg>
           <span>Маркер</span>
         </button>
-        <button class="tool" type="button" data-mode="brush" title="Кисть — B">
+        <button class="tool" type="button" data-mode="brush" title="Кисти — B">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="m14.62 17.9-10.68-2.92"/>
             <path d="M18.38 2.62a1 1 0 1 1 3 3L17.36 9.64a.5.5 0 0 0 0 .71l.94.94a2.41 2.41 0 0 1 0 3.41l-.94.94a.5.5 0 0 1-.71 0L8.35 7.35a.5.5 0 0 1 0-.71l.94-.94a2.41 2.41 0 0 1 3.41 0l.94.94a.5.5 0 0 0 .71 0z"/>
             <path d="M9 8c-1.8 2.71-3.97 3.46-6.58 3.95a.51.51 0 0 0-.3.82l7.32 8.88a1 1 0 0 0 1.18.2C12.74 20.4 16 16.79 16 15"/>
           </svg>
           <span>Кисть</span>
+        </button>
+        <button class="tool" type="button" data-mode="pattern" title="Паттерн-кисти — T">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="4.5"/>
+            <circle cx="8.5" cy="8.5" r="1.9" fill="currentColor" stroke="none"/>
+            <circle cx="15.5" cy="8.5" r="1.9" fill="currentColor" stroke="none"/>
+            <circle cx="8.5" cy="15.5" r="1.9" fill="currentColor" stroke="none"/>
+            <circle cx="15.5" cy="15.5" r="1.9" fill="currentColor" stroke="none"/>
+          </svg>
+          <span>Паттерны</span>
         </button>
         <button class="tool" type="button" data-mode="pencil" title="Карандаш — P">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -152,6 +179,42 @@
           <path d="M296 -20h14v46a7 7 0 0 1-14 0Z" fill="#ff2e63"/>
         </svg>
       </span>
+    </div>
+  </div>
+
+  <div class="patterns" id="patternsModal" aria-hidden="true">
+    <div class="patterns-backdrop" data-close="1"></div>
+    <div class="patterns-panel" role="dialog" aria-modal="true" aria-labelledby="patternsTitle">
+      <header class="patterns-head">
+        <div class="patterns-heading">
+          <h2 id="patternsTitle">Паттерн-кисти</h2>
+          <p>20 текстур — цвет берётся из палитры</p>
+        </div>
+        <button class="patterns-close" id="patternsClose" type="button" data-close="1" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M6 6l12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </header>
+      <div class="patterns-grid" id="patternsGrid"></div>
+    </div>
+  </div>
+
+  <div class="patterns" id="brushesModal" aria-hidden="true">
+    <div class="patterns-backdrop" data-close="1"></div>
+    <div class="patterns-panel" role="dialog" aria-modal="true" aria-labelledby="brushesTitle">
+      <header class="patterns-head">
+        <div class="patterns-heading">
+          <h2 id="brushesTitle">Кисти</h2>
+          <p>20 кистей — цвет берётся из палитры</p>
+        </div>
+        <button class="patterns-close" id="brushesClose" type="button" data-close="1" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M6 6l12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </header>
+      <div class="patterns-grid" id="brushesGrid"></div>
     </div>
   </div>
 

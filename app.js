@@ -7,11 +7,12 @@
   const stageEl = document.getElementById('stage');
   const wrapEl = document.getElementById('canvasWrap');
   const wallEl = document.getElementById('wall');
-  const paintEl = document.getElementById('paint');
+  const paintEls = [...document.querySelectorAll('.paint-layer')];
   const previewEl = document.getElementById('preview');
   const wallCtx = wallEl.getContext('2d');
-  const pctx = paintEl.getContext('2d');
+  const paintCtxs = paintEls.map((el) => el.getContext('2d'));
   const vctx = previewEl.getContext('2d');
+  const LAYER_COUNT = paintEls.length;
 
   const undoBtn = document.getElementById('undoBtn');
   const redoBtn = document.getElementById('redoBtn');
@@ -34,6 +35,10 @@
   const splashEl = document.getElementById('splash');
   const cursorEl = document.getElementById('cursor');
   const toastEl = document.getElementById('toast');
+  const layersBtn = document.getElementById('layersBtn');
+  const layersPop = document.getElementById('layersPop');
+  const layersList = document.getElementById('layersList');
+  const layersBadge = document.getElementById('layersBadge');
 
   const PALETTE = [
     ['#ff2e63', 'розовый неон'],
@@ -53,8 +58,16 @@
     size: 32,
     alpha: 1,
     smooth: 0.7,
-    wall: 'brick'
+    wall: 'brick',
+    pattern: 'dots',
+    brush: 'soft',
+    layer: LAYER_COUNT - 1
   };
+
+  const layers = Array.from({ length: LAYER_COUNT }, (_, i) => ({
+    name: `Слой ${i + 1}`,
+    visible: true
+  }));
 
   const MIN_ZOOM = 1;
   const MAX_ZOOM = 4;
@@ -86,6 +99,7 @@
 
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const rand = (a, b) => a + Math.random() * (b - a);
+  const TAU = Math.PI * 2;
 
   function withAlpha(hex, a) {
     const v = parseInt(hex.slice(1), 16);
@@ -533,17 +547,991 @@
     });
   }
 
+  // ---------- pattern brushes ----------
+
+  const PATTERN_TILE = 96;
+
+  function shade(hex, amount) {
+    const v = parseInt(hex.slice(1), 16);
+    const target = amount < 0 ? 0 : 255;
+    const k = Math.abs(amount);
+    const mix = (ch) => Math.round(ch + (target - ch) * k);
+    return `rgb(${mix((v >> 16) & 255)},${mix((v >> 8) & 255)},${mix(v & 255)})`;
+  }
+
+  function pWrap(g, size, draw) {
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        g.save();
+        g.translate(ox * size, oy * size);
+        draw();
+        g.restore();
+      }
+    }
+  }
+
+  function pStroke(g, x1, y1, x2, y2, width, color) {
+    g.strokeStyle = color;
+    g.lineWidth = width;
+    g.lineCap = 'round';
+    g.beginPath();
+    g.moveTo(x1, y1);
+    g.lineTo(x2, y2);
+    g.stroke();
+  }
+
+  function pHeart(g, cx, cy, s, fill) {
+    g.fillStyle = fill;
+    g.beginPath();
+    g.moveTo(cx, cy + s * 0.72);
+    g.bezierCurveTo(cx - s * 1.12, cy - s * 0.06, cx - s * 0.58, cy - s * 0.98, cx, cy - s * 0.36);
+    g.bezierCurveTo(cx + s * 0.58, cy - s * 0.98, cx + s * 1.12, cy - s * 0.06, cx, cy + s * 0.72);
+    g.fill();
+  }
+
+  function pStar(g, cx, cy, outer, inner, fill) {
+    g.fillStyle = fill;
+    g.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const radius = i % 2 ? inner : outer;
+      const ang = -Math.PI / 2 + (i * Math.PI) / 5;
+      const x = cx + Math.cos(ang) * radius;
+      const y = cy + Math.sin(ang) * radius;
+      if (i) g.lineTo(x, y);
+      else g.moveTo(x, y);
+    }
+    g.closePath();
+    g.fill();
+  }
+
+  const PATTERNS = [
+    {
+      id: 'dots',
+      name: 'Горошек',
+      zoom: 2,
+      draw(g, t) {
+        for (let y = 0; y < t.T; y += 24) {
+          const off = (y / 24) % 2 ? 12 : 0;
+          for (let x = 0; x < t.T; x += 24) {
+            g.fillStyle = t.c;
+            g.beginPath();
+            g.arc(x + off + 6, y + 11, 4.6, 0, TAU);
+            g.fill();
+          }
+        }
+      }
+    },
+    {
+      id: 'bigdots',
+      name: 'Крупный горошек',
+      zoom: 2.4,
+      draw(g, t) {
+        for (let row = 0; row < 2; row++) {
+          const y = 24 + row * 48;
+          const off = row % 2 ? 24 : 0;
+          for (let x = 0; x < t.T; x += 48) {
+            g.fillStyle = row % 2 ? t.light : t.c;
+            g.beginPath();
+            g.arc((x + off + 12) % t.T, y, 10.5, 0, TAU);
+            g.fill();
+          }
+        }
+      }
+    },
+    {
+      id: 'bubbles',
+      name: 'Пузырьки',
+      zoom: 2.2,
+      draw(g, t) {
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            const cx = 16 + i * 32;
+            const cy = 16 + j * 32;
+            const r = 6.5 + ((i * 2 + j * 3) % 3) * 1.7;
+            g.strokeStyle = (i + j) % 2 ? t.light : t.c;
+            g.lineWidth = 2.1;
+            g.beginPath();
+            g.arc(cx, cy, r, 0, TAU);
+            g.stroke();
+            g.fillStyle = t.c;
+            g.beginPath();
+            g.arc(cx - r * 0.34, cy - r * 0.36, Math.max(0.9, r * 0.18), 0, TAU);
+            g.fill();
+          }
+        }
+      }
+    },
+    {
+      id: 'checker',
+      name: 'Клетка',
+      zoom: 2,
+      draw(g, t) {
+        const cell = t.T / 4;
+        for (let y = 0; y < 4; y++) {
+          for (let x = 0; x < 4; x++) {
+            if ((x + y) % 2) continue;
+            g.fillStyle = t.c;
+            g.fillRect(x * cell, y * cell, cell, cell);
+          }
+        }
+      }
+    },
+    {
+      id: 'stripes',
+      name: 'Полоски',
+      zoom: 1.8,
+      draw(g, t) {
+        g.strokeStyle = t.c;
+        g.lineWidth = 7;
+        for (let k = -6; k <= 6; k++) {
+          const off = k * 16;
+          g.beginPath();
+          g.moveTo(off, 0);
+          g.lineTo(off + t.T, t.T);
+          g.stroke();
+        }
+      }
+    },
+    {
+      id: 'zigzag',
+      name: 'Зигзаг',
+      zoom: 2,
+      draw(g, t) {
+        g.strokeStyle = t.c;
+        g.lineWidth = 3.4;
+        g.lineJoin = 'round';
+        g.lineCap = 'round';
+        for (let row = 0; row < 4; row++) {
+          const base = 12 + row * 24;
+          g.beginPath();
+          for (let i = -1; i <= 5; i++) {
+            const x = i * 24;
+            const y = base + ((i + row) % 2 === 0 ? -5 : 5);
+            if (i === -1) g.moveTo(x, y);
+            else g.lineTo(x, y);
+          }
+          g.stroke();
+        }
+      }
+    },
+    {
+      id: 'hearts',
+      name: 'Сердечки',
+      zoom: 2.2,
+      draw(g, t) {
+        for (let i = 0; i < 2; i++) {
+          for (let j = 0; j < 2; j++) {
+            pHeart(g, 24 + i * 48, 24 + j * 48, 11, (i + j) % 2 ? t.light : t.c);
+          }
+        }
+      }
+    },
+    {
+      id: 'stars',
+      name: 'Звёзды',
+      zoom: 2,
+      draw(g, t) {
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            pStar(g, 16 + i * 32, 16 + j * 32, 9.5, 4.2, (i + j) % 3 === 0 ? t.light : t.c);
+          }
+        }
+      }
+    },
+    {
+      id: 'crosses',
+      name: 'Крестики',
+      zoom: 1.8,
+      draw(g, t) {
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            const cx = 16 + i * 32;
+            const cy = 16 + j * 32;
+            const col = (i + j) % 2 ? t.light : t.c;
+            pStroke(g, cx - 6, cy - 6, cx + 6, cy + 6, 3.4, col);
+            pStroke(g, cx - 6, cy + 6, cx + 6, cy - 6, 3.4, col);
+          }
+        }
+      }
+    },
+    {
+      id: 'bolts',
+      name: 'Молнии',
+      zoom: 2,
+      draw(g, t) {
+        const bolt = (cx, cy, fill) => {
+          g.fillStyle = fill;
+          g.beginPath();
+          g.moveTo(cx + 2.5, cy - 11);
+          g.lineTo(cx - 7, cy + 2);
+          g.lineTo(cx - 0.6, cy + 2);
+          g.lineTo(cx - 3, cy + 12);
+          g.lineTo(cx + 7, cy - 1.5);
+          g.lineTo(cx + 0.6, cy - 1.5);
+          g.closePath();
+          g.fill();
+        };
+        for (let i = 0; i < 2; i++) {
+          for (let j = 0; j < 2; j++) {
+            bolt(24 + i * 48, 24 + j * 48, (i + j) % 2 ? t.light : t.c);
+          }
+        }
+      }
+    },
+    {
+      id: 'camo',
+      name: 'Камуфляж',
+      zoom: 2.6,
+      draw(g, t) {
+        const rnd = mulberry32(9137);
+        const blobs = [];
+        for (let i = 0; i < 8; i++) {
+          blobs.push({
+            x: rnd() * t.T,
+            y: rnd() * t.T,
+            rx: 12 + rnd() * 14,
+            ry: 9 + rnd() * 12,
+            rot: rnd() * Math.PI,
+            fill: [t.c, t.light, t.dark][i % 3]
+          });
+        }
+        pWrap(g, t.T, () => {
+          for (const b of blobs) {
+            g.fillStyle = b.fill;
+            g.beginPath();
+            g.ellipse(b.x, b.y, b.rx, b.ry, b.rot, 0, TAU);
+            g.fill();
+          }
+        });
+      }
+    },
+    {
+      id: 'confetti',
+      name: 'Конфетти',
+      zoom: 2,
+      draw(g, t) {
+        const rnd = mulberry32(4711);
+        const items = [];
+        for (let i = 0; i < 30; i++) {
+          items.push({
+            x: rnd() * t.T,
+            y: rnd() * t.T,
+            size: 2.4 + rnd() * 4.2,
+            rot: rnd() * Math.PI,
+            round: rnd() < 0.4,
+            fill: [t.c, t.light, t.dark][i % 3]
+          });
+        }
+        pWrap(g, t.T, () => {
+          for (const it of items) {
+            g.fillStyle = it.fill;
+            if (it.round) {
+              g.beginPath();
+              g.arc(it.x, it.y, it.size * 0.55, 0, TAU);
+              g.fill();
+            } else {
+              g.save();
+              g.translate(it.x, it.y);
+              g.rotate(it.rot);
+              g.fillRect(-it.size, -it.size * 0.34, it.size * 2, it.size * 0.68);
+              g.restore();
+            }
+          }
+        });
+      }
+    },
+    {
+      id: 'rain',
+      name: 'Дождь',
+      zoom: 1.8,
+      draw(g, t) {
+        for (let row = 0; row < 4; row++) {
+          const y = 6 + row * 24;
+          const off = row % 2 ? 12 : 0;
+          for (let x = 0; x < t.T; x += 24) {
+            const px = (x + off + 8) % t.T;
+            pStroke(g, px, y, px - 4, y + 9, 2.2, row % 2 ? t.light : t.c);
+          }
+        }
+      }
+    },
+    {
+      id: 'triangles',
+      name: 'Треугольники',
+      zoom: 2,
+      draw(g, t) {
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            const cx = 16 + i * 32;
+            const cy = 16 + j * 32;
+            const up = (i + j) % 2 === 0;
+            g.fillStyle = up ? t.c : t.light;
+            g.beginPath();
+            if (up) {
+              g.moveTo(cx, cy - 9);
+              g.lineTo(cx + 10, cy + 7);
+              g.lineTo(cx - 10, cy + 7);
+            } else {
+              g.moveTo(cx, cy + 9);
+              g.lineTo(cx + 10, cy - 7);
+              g.lineTo(cx - 10, cy - 7);
+            }
+            g.closePath();
+            g.fill();
+          }
+        }
+      }
+    },
+    {
+      id: 'diamonds',
+      name: 'Ромбы',
+      zoom: 2,
+      draw(g, t) {
+        g.lineWidth = 3;
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            const cx = 16 + i * 32;
+            const cy = 16 + j * 32;
+            g.strokeStyle = (i + j) % 2 ? t.light : t.c;
+            g.beginPath();
+            g.moveTo(cx, cy - 10);
+            g.lineTo(cx + 10, cy);
+            g.lineTo(cx, cy + 10);
+            g.lineTo(cx - 10, cy);
+            g.closePath();
+            g.stroke();
+          }
+        }
+      }
+    },
+    {
+      id: 'waves',
+      name: 'Волны',
+      zoom: 2,
+      draw(g, t) {
+        g.strokeStyle = t.c;
+        g.lineWidth = 3.3;
+        g.lineCap = 'round';
+        for (let row = 0; row < 4; row++) {
+          const base = 12 + row * 24;
+          g.beginPath();
+          for (let x = 0; x <= t.T; x += 3) {
+            const y = base + Math.sin((x / 48) * TAU + (row % 2) * Math.PI) * 6;
+            if (x === 0) g.moveTo(x, y);
+            else g.lineTo(x, y);
+          }
+          g.stroke();
+        }
+      }
+    },
+    {
+      id: 'rings',
+      name: 'Кольца',
+      zoom: 2.2,
+      draw(g, t) {
+        const rings = [[4, 0], [8, 1], [12, 0]];
+        for (let i = 0; i < 2; i++) {
+          for (let j = 0; j < 2; j++) {
+            const cx = 24 + i * 48;
+            const cy = 24 + j * 48;
+            for (const [r, tone] of rings) {
+              g.strokeStyle = tone ? t.light : t.c;
+              g.lineWidth = 2.2;
+              g.beginPath();
+              g.arc(cx, cy, r, 0, TAU);
+              g.stroke();
+            }
+          }
+        }
+      }
+    },
+    {
+      id: 'mesh',
+      name: 'Сетка',
+      zoom: 2,
+      draw(g, t) {
+        g.strokeStyle = t.c;
+        g.lineWidth = 1.8;
+        for (let v = 0; v <= t.T; v += 16) {
+          g.beginPath();
+          g.moveTo(v, 0);
+          g.lineTo(v, t.T);
+          g.stroke();
+          g.beginPath();
+          g.moveTo(0, v);
+          g.lineTo(t.T, v);
+          g.stroke();
+        }
+      }
+    },
+    {
+      id: 'splatter',
+      name: 'Брызги',
+      zoom: 2.2,
+      draw(g, t) {
+        const rnd = mulberry32(2027);
+        const drops = [];
+        for (let i = 0; i < 42; i++) {
+          drops.push({
+            x: rnd() * t.T,
+            y: rnd() * t.T,
+            r: i < 8 ? 2.4 + rnd() * 2.6 : 0.7 + rnd() * 1.8,
+            fill: i % 4 === 0 ? t.light : t.c
+          });
+        }
+        pWrap(g, t.T, () => {
+          for (const d of drops) {
+            g.fillStyle = d.fill;
+            g.beginPath();
+            g.arc(d.x, d.y, d.r, 0, TAU);
+            g.fill();
+          }
+        });
+      }
+    },
+    {
+      id: 'smileys',
+      name: 'Смайлики',
+      zoom: 2.3,
+      draw(g, t) {
+        for (let i = 0; i < 2; i++) {
+          for (let j = 0; j < 2; j++) {
+            const cx = 24 + i * 48;
+            const cy = 24 + j * 48;
+            const col = (i + j) % 2 ? t.light : t.c;
+            g.strokeStyle = col;
+            g.fillStyle = col;
+            g.lineWidth = 2.4;
+            g.beginPath();
+            g.arc(cx, cy, 10, 0, TAU);
+            g.stroke();
+            g.beginPath();
+            g.arc(cx - 3.6, cy - 3, 1.7, 0, TAU);
+            g.fill();
+            g.beginPath();
+            g.arc(cx + 3.6, cy - 3, 1.7, 0, TAU);
+            g.fill();
+            g.beginPath();
+            g.arc(cx, cy + 0.5, 5.4, Math.PI * 0.18, Math.PI * 0.82);
+            g.stroke();
+          }
+        }
+      }
+    }
+  ];
+
+  const PATTERN_MAP = new Map(PATTERNS.map((p) => [p.id, p]));
+  const patternTileCache = new Map();
+  const patternStampCache = new Map();
+
+  function getPatternTile(def, color) {
+    const key = `${def.id}|${color}`;
+    let tile = patternTileCache.get(key);
+    if (tile) return tile;
+    tile = makeCanvas(PATTERN_TILE, PATTERN_TILE);
+    const g = tile.getContext('2d');
+    def.draw(g, {
+      c: color,
+      light: shade(color, 0.42),
+      dark: shade(color, -0.4),
+      T: PATTERN_TILE
+    });
+    patternTileCache.set(key, tile);
+    if (patternTileCache.size > 160) {
+      patternTileCache.delete(patternTileCache.keys().next().value);
+    }
+    return tile;
+  }
+
+  function getPattern(id, color, size) {
+    const def = PATTERN_MAP.get(id) || PATTERNS[0];
+    const world = Math.max(12, size * def.zoom);
+    const key = `${def.id}|${color}|${world.toFixed(1)}`;
+    const hit = patternStampCache.get(key);
+    if (hit) return hit;
+    const pat = vctx.createPattern(getPatternTile(def, color), 'repeat');
+    if (pat && typeof pat.setTransform === 'function' && typeof DOMMatrix === 'function') {
+      const s = world / PATTERN_TILE;
+      pat.setTransform(new DOMMatrix([s, 0, 0, s, 0, 0]));
+    }
+    patternStampCache.set(key, pat);
+    if (patternStampCache.size > 600) {
+      patternStampCache.delete(patternStampCache.keys().next().value);
+    }
+    return pat;
+  }
+
+  // ---------- brush presets ----------
+
+  function bFill(g, color, x, y, r, a) {
+    g.fillStyle = withAlpha(color, a);
+    g.beginPath();
+    g.arc(x, y, r, 0, TAU);
+    g.fill();
+  }
+
+  function bSoftDot(g, color, x, y, r, a, core) {
+    const grad = g.createRadialGradient(x, y, r * 0.04, x, y, r);
+    grad.addColorStop(0, withAlpha(color, a * (core === undefined ? 0.5 : core)));
+    grad.addColorStop(0.62, withAlpha(color, a * 0.32));
+    grad.addColorStop(0.88, withAlpha(color, a * 0.1));
+    grad.addColorStop(1, withAlpha(color, 0));
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(x, y, r, 0, TAU);
+    g.fill();
+  }
+
+  function bGrains(g, rt, x, y, r, count, maxSize, minA, maxA) {
+    const rnd = rt.rng;
+    for (let i = 0; i < count; i++) {
+      const ang = rnd() * TAU;
+      const dist = Math.sqrt(rnd()) * r;
+      const s = 0.4 + rnd() * maxSize;
+      g.fillStyle = withAlpha(rt.color, rt.alpha * (minA + rnd() * (maxA - minA)));
+      g.fillRect(x + Math.cos(ang) * dist, y + Math.sin(ang) * dist, s, s);
+    }
+  }
+
+  const BRUSHES = [
+    {
+      id: 'soft',
+      name: 'Мягкая',
+      spacing: 0.22,
+      stamp(g, rt, x, y, p) {
+        const rnd = rt.rng;
+        const r = Math.max(2.2, rt.size * 0.5 * (0.72 + 0.28 * p));
+        bSoftDot(g, rt.color, x, y, r, rt.alpha, 0.45);
+        for (let i = 0; i < 2; i++) {
+          const ang = rnd() * TAU;
+          const dist = r * 0.35 * rnd();
+          bFill(
+            g, rt.color,
+            x + Math.cos(ang) * dist,
+            y + Math.sin(ang) * dist,
+            r * (0.28 + rnd() * 0.22),
+            rt.alpha * 0.08
+          );
+        }
+      }
+    },
+    {
+      id: 'round',
+      name: 'Круглая',
+      spacing: 0.1,
+      stamp(g, rt, x, y, p) {
+        const r = Math.max(1.6, rt.size * 0.5 * (0.78 + 0.22 * p));
+        const grad = g.createRadialGradient(x, y, r * 0.2, x, y, r);
+        grad.addColorStop(0, withAlpha(rt.color, rt.alpha * 0.5));
+        grad.addColorStop(0.85, withAlpha(rt.color, rt.alpha * 0.46));
+        grad.addColorStop(1, withAlpha(rt.color, 0));
+        g.fillStyle = grad;
+        g.beginPath();
+        g.arc(x, y, r, 0, TAU);
+        g.fill();
+      }
+    },
+    {
+      id: 'air',
+      name: 'Аэрограф',
+      spacing: 0.15,
+      stamp(g, rt, x, y, p) {
+        const rnd = rt.rng;
+        const r = Math.max(2, rt.size * 0.5 * (0.8 + 0.2 * p));
+        bSoftDot(g, rt.color, x, y, r, rt.alpha * 0.35, 0.35);
+        const n = Math.round(r * 2.4);
+        for (let i = 0; i < n; i++) {
+          const ang = rnd() * TAU;
+          const dist = Math.sqrt(rnd()) * r * 1.05;
+          bFill(
+            g, rt.color,
+            x + Math.cos(ang) * dist,
+            y + Math.sin(ang) * dist,
+            0.35 + rnd() * 0.85,
+            rt.alpha * (0.1 + rnd() * 0.32)
+          );
+        }
+      }
+    },
+    {
+      id: 'dry',
+      name: 'Сухая',
+      spacing: 0.24,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(2, rt.size * 0.5);
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        g.save();
+        g.translate(x, y);
+        g.rotate(dir);
+        g.lineCap = 'round';
+        for (let i = 0; i < 7; i++) {
+          const off = (i / 6 - 0.5) * r * 1.75;
+          const len = r * (0.55 + rnd() * 1.05);
+          g.strokeStyle = withAlpha(rt.color, rt.alpha * (0.08 + rnd() * 0.26));
+          g.lineWidth = 0.6 + rnd() * 1.1;
+          g.beginPath();
+          g.moveTo(-len * 0.5 + rnd() * 2, off + (rnd() - 0.5) * 2);
+          g.lineTo(len * 0.5, off + (rnd() - 0.5) * 2);
+          g.stroke();
+        }
+        g.restore();
+        bGrains(g, rt, x, y, r * 1.1, Math.round(r * 1.4), 1.1, 0.05, 0.3);
+      }
+    },
+    {
+      id: 'bristle',
+      name: 'Щетина',
+      spacing: 0.34,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(2.4, rt.size * 0.5);
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        g.save();
+        g.translate(x, y);
+        g.rotate(dir);
+        g.lineCap = 'round';
+        for (let i = 0; i < 5; i++) {
+          const off = (rnd() - 0.5) * r * 1.7;
+          const len = r * (0.8 + rnd() * 0.6);
+          g.strokeStyle = withAlpha(rt.color, rt.alpha * (0.14 + rnd() * 0.3));
+          g.lineWidth = 1 + rnd() * 1.8;
+          g.beginPath();
+          g.moveTo(-len, off);
+          g.lineTo(len, off + (rnd() - 0.5) * 3);
+          g.stroke();
+        }
+        g.restore();
+      }
+    },
+    {
+      id: 'fur',
+      name: 'Мех',
+      spacing: 0.26,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(2, rt.size * 0.5 * (0.8 + 0.2 * p));
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        bFill(g, rt.color, x, y, r * 0.35, rt.alpha * 0.12);
+        g.lineCap = 'round';
+        for (let i = 0; i < 12; i++) {
+          const a = dir + (rnd() - 0.5) * 1.9;
+          const len = r * (0.45 + rnd() * 0.95);
+          g.strokeStyle = withAlpha(rt.color, rt.alpha * (0.12 + rnd() * 0.3));
+          g.lineWidth = 0.5 + rnd() * 0.9;
+          g.beginPath();
+          g.moveTo(x + (rnd() - 0.5) * r * 0.4, y + (rnd() - 0.5) * r * 0.4);
+          g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+          g.stroke();
+        }
+      }
+    },
+    {
+      id: 'chalk',
+      name: 'Мел',
+      spacing: 0.17,
+      stamp(g, rt, x, y, p) {
+        const r = Math.max(2, rt.size * 0.5 * (0.85 + 0.15 * p));
+        bFill(g, rt.color, x, y, r * 0.55, rt.alpha * 0.09);
+        bGrains(g, rt, x, y, r, Math.round(r * 3.2), 1.2, 0.12, 0.5);
+      }
+    },
+    {
+      id: 'charcoal',
+      name: 'Уголь',
+      spacing: 0.25,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(2.5, rt.size * 0.5 * (0.85 + 0.15 * p));
+        bFill(g, rt.color, x, y, r * 0.7, rt.alpha * 0.1);
+        bGrains(g, rt, x, y, r * 1.05, Math.round(r * 2.2), 2, 0.18, 0.6);
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        g.save();
+        g.translate(x, y);
+        g.rotate(dir);
+        g.strokeStyle = withAlpha(rt.color, rt.alpha * 0.14);
+        g.lineWidth = 1.2 + rnd() * 2;
+        g.beginPath();
+        g.moveTo(-r * (0.5 + rnd() * 0.5), (rnd() - 0.5) * r * 1.2);
+        g.lineTo(r * (0.5 + rnd() * 0.5), (rnd() - 0.5) * r * 1.2);
+        g.stroke();
+        g.restore();
+      }
+    },
+    {
+      id: 'water',
+      name: 'Акварель',
+      spacing: 0.38,
+      stamp(g, rt, x, y, p) {
+        const rnd = rt.rng;
+        const r = Math.max(3, rt.size * 0.5 * (0.8 + 0.2 * p));
+        for (let i = 0; i < 3; i++) {
+          const ang = rnd() * TAU;
+          const dist = rnd() * r * 0.55;
+          const rr2 = r * (0.45 + rnd() * 0.5);
+          const bx = x + Math.cos(ang) * dist;
+          const by = y + Math.sin(ang) * dist;
+          const grad = g.createRadialGradient(bx, by, rr2 * 0.1, bx, by, rr2);
+          grad.addColorStop(0, withAlpha(rt.color, rt.alpha * 0.09));
+          grad.addColorStop(0.72, withAlpha(rt.color, rt.alpha * 0.05));
+          grad.addColorStop(1, withAlpha(rt.color, 0));
+          g.fillStyle = grad;
+          g.beginPath();
+          g.arc(bx, by, rr2, 0, TAU);
+          g.fill();
+        }
+      }
+    },
+    {
+      id: 'ink',
+      name: 'Тушь',
+      spacing: 0.075,
+      stamp(g, rt, x, y, p) {
+        const rnd = rt.rng;
+        const r = Math.max(1.5, rt.size * 0.34 * (0.65 + 0.35 * p));
+        const grad = g.createRadialGradient(x, y, 0, x, y, r);
+        grad.addColorStop(0, withAlpha(rt.color, rt.alpha * 0.62));
+        grad.addColorStop(0.88, withAlpha(rt.color, rt.alpha * 0.56));
+        grad.addColorStop(1, withAlpha(rt.color, 0));
+        g.fillStyle = grad;
+        g.beginPath();
+        g.arc(x, y, r, 0, TAU);
+        g.fill();
+        if (rnd() < 0.3) {
+          bFill(g, rt.color, x + (rnd() - 0.5) * r, y + (rnd() - 0.5) * r, r * 0.3, rt.alpha * 0.25);
+        }
+      }
+    },
+    {
+      id: 'felt',
+      name: 'Фетр',
+      spacing: 0.09,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const k = 0.85 + 0.15 * p;
+        const len = Math.max(3, rt.size * 0.58 * k);
+        const thick = Math.max(1.4, rt.size * 0.36 * k);
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        g.save();
+        g.translate(x, y);
+        g.rotate(dir);
+        g.fillStyle = withAlpha(rt.color, rt.alpha * 0.3);
+        rr(g, -len / 2, -thick / 2, len, thick, thick * 0.4);
+        g.fill();
+        g.fillStyle = withAlpha(rt.color, rt.alpha * 0.14);
+        g.fillRect(-len / 2 + rnd() * 2, -thick / 2, len * 0.6, thick);
+        g.restore();
+      }
+    },
+    {
+      id: 'pastel',
+      name: 'Пастель',
+      spacing: 0.2,
+      stamp(g, rt, x, y, p) {
+        const r = Math.max(2.2, rt.size * 0.5 * (0.8 + 0.2 * p));
+        bSoftDot(g, rt.color, x, y, r * 1.05, rt.alpha * 0.28, 0.4);
+        bGrains(g, rt, x, y, r, Math.round(r * 2.2), 1.4, 0.08, 0.26);
+      }
+    },
+    {
+      id: 'sketch',
+      name: 'Набросок',
+      spacing: 0.15,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(2, rt.size * 0.5);
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        g.save();
+        g.translate(x, y);
+        g.rotate(dir);
+        g.lineCap = 'round';
+        for (let i = 0; i < 3; i++) {
+          const off = (i - 1) * r * 0.55;
+          const len = r * (1.1 + rnd() * 0.5);
+          g.strokeStyle = withAlpha(rt.color, rt.alpha * (0.12 + rnd() * 0.2));
+          g.lineWidth = 0.5 + rnd() * 0.7;
+          g.beginPath();
+          g.moveTo(-len / 2, off + (rnd() - 0.5) * 3);
+          g.lineTo(len / 2, off + (rnd() - 0.5) * 3);
+          g.stroke();
+        }
+        g.restore();
+      }
+    },
+    {
+      id: 'point',
+      name: 'Пуантилизм',
+      spacing: 0.52,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(1.6, rt.size * 0.5 * (0.7 + 0.3 * p));
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        const nx = Math.cos(dir + Math.PI / 2);
+        const ny = Math.sin(dir + Math.PI / 2);
+        const off = (rnd() - 0.5) * r * 1.1;
+        bFill(g, rt.color, x + nx * off, y + ny * off, r * (0.24 + rnd() * 0.34), rt.alpha * 0.62);
+        if (rnd() < 0.7) {
+          bFill(g, rt.color, x - nx * off * 1.4, y - ny * off * 1.4, r * (0.1 + rnd() * 0.16), rt.alpha * 0.34);
+        }
+      }
+    },
+    {
+      id: 'blob',
+      name: 'Кляксы',
+      spacing: 0.48,
+      stamp(g, rt, x, y, p) {
+        const rnd = rt.rng;
+        const r = Math.max(2.5, rt.size * 0.5 * (0.75 + 0.25 * p));
+        const pts = 9;
+        g.fillStyle = withAlpha(rt.color, rt.alpha * 0.2);
+        g.beginPath();
+        for (let i = 0; i < pts; i++) {
+          const ang = (i / pts) * TAU;
+          const rad = r * (0.45 + rnd() * 0.55);
+          const px = x + Math.cos(ang) * rad;
+          const py = y + Math.sin(ang) * rad;
+          if (i) g.lineTo(px, py);
+          else g.moveTo(px, py);
+        }
+        g.closePath();
+        g.fill();
+        bFill(g, rt.color, x + (rnd() - 0.5) * r, y + (rnd() - 0.5) * r, r * (0.12 + rnd() * 0.16), rt.alpha * 0.16);
+      }
+    },
+    {
+      id: 'fan',
+      name: 'Веер',
+      spacing: 0.3,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(2.4, rt.size * 0.5);
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        g.lineCap = 'round';
+        for (let i = 0; i < 5; i++) {
+          const a = dir + (i - 2) * 0.34 + (rnd() - 0.5) * 0.12;
+          const len = r * (0.75 + rnd() * 0.5);
+          g.strokeStyle = withAlpha(rt.color, rt.alpha * (0.13 + rnd() * 0.2));
+          g.lineWidth = 0.8 + rnd() * 1.4;
+          g.beginPath();
+          g.moveTo(x, y);
+          g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+          g.stroke();
+        }
+      }
+    },
+    {
+      id: 'ribbon',
+      name: 'Лента',
+      spacing: 0.13,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(2.4, rt.size * 0.5);
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        g.save();
+        g.translate(x, y);
+        g.rotate(dir);
+        g.lineCap = 'round';
+        for (let i = 0; i < 2; i++) {
+          const off = (i ? 1 : -1) * r * (0.3 + rnd() * 0.12);
+          g.strokeStyle = withAlpha(rt.color, rt.alpha * (0.2 + rnd() * 0.1));
+          g.lineWidth = r * (0.34 + rnd() * 0.12);
+          g.beginPath();
+          g.moveTo(-r * 0.7, off);
+          g.lineTo(r * 0.7, off + (rnd() - 0.5) * 2);
+          g.stroke();
+        }
+        g.restore();
+      }
+    },
+    {
+      id: 'hair',
+      name: 'Волоски',
+      spacing: 0.3,
+      stamp(g, rt, x, y, p, ang) {
+        const rnd = rt.rng;
+        const r = Math.max(2.4, rt.size * 0.5);
+        const dir = ang == null ? -Math.PI / 4 : ang;
+        g.lineCap = 'round';
+        for (let i = 0; i < 4; i++) {
+          const a = dir + Math.PI + (rnd() - 0.5) * 0.7;
+          const len = r * (1.3 + rnd() * 1.4);
+          g.strokeStyle = withAlpha(rt.color, rt.alpha * (0.1 + rnd() * 0.22));
+          g.lineWidth = 0.4 + rnd() * 0.8;
+          g.beginPath();
+          g.moveTo(x, y);
+          g.quadraticCurveTo(
+            x + Math.cos(a) * len * 0.5 + (rnd() - 0.5) * r * 0.5,
+            y + Math.sin(a) * len * 0.5 + (rnd() - 0.5) * r * 0.5,
+            x + Math.cos(a) * len,
+            y + Math.sin(a) * len
+          );
+          g.stroke();
+        }
+      }
+    },
+    {
+      id: 'cloud',
+      name: 'Облако',
+      spacing: 0.34,
+      stamp(g, rt, x, y, p) {
+        const rnd = rt.rng;
+        const r = Math.max(4, rt.size * 0.5 * (0.8 + 0.2 * p));
+        for (let i = 0; i < 3; i++) {
+          const ang = rnd() * TAU;
+          const dist = rnd() * r * 0.65;
+          const bx = x + Math.cos(ang) * dist;
+          const by = y + Math.sin(ang) * dist;
+          const rr2 = r * (0.7 + rnd() * 0.55);
+          const grad = g.createRadialGradient(bx, by, 0, bx, by, rr2);
+          grad.addColorStop(0, withAlpha(rt.color, rt.alpha * 0.075));
+          grad.addColorStop(0.6, withAlpha(rt.color, rt.alpha * 0.04));
+          grad.addColorStop(1, withAlpha(rt.color, 0));
+          g.fillStyle = grad;
+          g.beginPath();
+          g.arc(bx, by, rr2, 0, TAU);
+          g.fill();
+        }
+      }
+    },
+    {
+      id: 'neon',
+      name: 'Неон',
+      spacing: 0.11,
+      stamp(g, rt, x, y, p) {
+        const r = Math.max(2, rt.size * 0.5 * (0.8 + 0.2 * p));
+        const grad = g.createRadialGradient(x, y, 0, x, y, r * 1.7);
+        grad.addColorStop(0, withAlpha(rt.color, rt.alpha * 0.3));
+        grad.addColorStop(0.4, withAlpha(rt.color, rt.alpha * 0.14));
+        grad.addColorStop(1, withAlpha(rt.color, 0));
+        g.fillStyle = grad;
+        g.beginPath();
+        g.arc(x, y, r * 1.7, 0, TAU);
+        g.fill();
+        bFill(g, rt.color, x, y, r * 0.52, rt.alpha * 0.5);
+        bFill(g, '#ffffff', x, y, r * 0.24, rt.alpha * 0.55);
+      }
+    }
+  ];
+
+  const BRUSH_MAP = new Map(BRUSHES.map((b) => [b.id, b]));
+
   // ---------- drawing engine ----------
 
   function makeRuntime(action) {
+    const layer = clamp(action.layer == null ? state.layer : action.layer, 0, LAYER_COUNT - 1);
     return {
       action,
+      layer,
+      paint: paintCtxs[layer],
       mode: action.mode,
       color: action.color,
       size: action.size,
       alpha: action.alpha,
       smooth: action.smooth || 0,
       rng: mulberry32(action.seed),
+      pattern: action.mode === 'pattern' ? getPattern(action.pattern, action.color, action.size) : null,
+      brush: action.mode === 'brush' ? (BRUSH_MAP.get(action.brush) || BRUSHES[0]) : null,
+      angle: null,
       spline: null,
       lastSample: null,
       lastRaw: null,
@@ -551,8 +1539,6 @@
       carry: 0
     };
   }
-
-  const TAU = Math.PI * 2;
 
   function pencilWidth(rt, pressure) {
     return Math.max(1.2, rt.size * 0.1 * (0.85 + 0.15 * pressure));
@@ -611,30 +1597,20 @@
     }
   }
 
-  function brushStamp(ctx, rt, x, y, pressure) {
-    const rnd = rt.rng;
-    const base = Math.max(2.2, rt.size * 0.5 * (0.6 + 0.4 * pressure));
-    const r = base * (0.95 + rnd() * 0.1);
-    const a = rt.alpha;
-    const grad = ctx.createRadialGradient(x, y, r * 0.1, x, y, r);
-    grad.addColorStop(0, withAlpha(rt.color, a * 0.6));
-    grad.addColorStop(0.72, withAlpha(rt.color, a * 0.52));
-    grad.addColorStop(0.92, withAlpha(rt.color, a * 0.22));
-    grad.addColorStop(1, withAlpha(rt.color, 0));
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, TAU);
-    ctx.fill();
+  function brushStamp(ctx, rt, x, y, pressure, angle) {
+    if (!rt.brush) return;
+    rt.brush.stamp(ctx, rt, x, y, pressure, angle);
+  }
 
-    const dabs = Math.min(4, Math.round(base / 12));
-    for (let i = 0; i < dabs; i++) {
-      const ang = rnd() * TAU;
-      const dist = r * (0.55 + rnd() * 0.35);
-      ctx.fillStyle = withAlpha(rt.color, a * 0.18);
-      ctx.beginPath();
-      ctx.arc(x + Math.cos(ang) * dist, y + Math.sin(ang) * dist, r * (0.1 + rnd() * 0.12), 0, TAU);
-      ctx.fill();
+  function smoothAngle(rt, target) {
+    if (rt.angle == null) {
+      rt.angle = target;
+      return;
     }
+    let diff = target - rt.angle;
+    while (diff > Math.PI) diff -= TAU;
+    while (diff < -Math.PI) diff += TAU;
+    rt.angle += diff * 0.35;
   }
 
   function sprayWalk(rt, a, b) {
@@ -647,7 +1623,7 @@
     if (t < 0) t += step;
     while (t <= dist) {
       const k = t / dist;
-      sprayStamp(pctx, rt, a.x + dx * k, a.y + dy * k, a.p + (b.p - a.p) * k);
+      sprayStamp(rt.paint, rt, a.x + dx * k, a.y + dy * k, a.p + (b.p - a.p) * k);
       t += step;
     }
     rt.carry = (rt.carry + dist) % step;
@@ -657,13 +1633,45 @@
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const dist = Math.hypot(dx, dy);
-    if (dist < 0.01) return;
-    const step = Math.max(0.9, rt.size * 0.5 * 0.22);
+    if (dist < 0.01) {
+      brushStamp(rt.paint, rt, a.x, a.y, a.p, rt.angle == null ? -Math.PI / 4 : rt.angle);
+      return;
+    }
+    smoothAngle(rt, Math.atan2(dy, dx));
+    const step = Math.max(0.55, rt.size * rt.brush.spacing);
     let t = step - rt.carry;
     if (t < 0) t += step;
     while (t <= dist) {
       const k = t / dist;
-      brushStamp(pctx, rt, a.x + dx * k, a.y + dy * k, a.p + (b.p - a.p) * k);
+      brushStamp(rt.paint, rt, a.x + dx * k, a.y + dy * k, a.p + (b.p - a.p) * k, rt.angle);
+      t += step;
+    }
+    rt.carry = (rt.carry + dist) % step;
+  }
+
+  function patternStamp(ctx, rt, x, y, pressure) {
+    if (!rt.pattern) return;
+    const r = Math.max(2.5, rt.size * 0.5 * (0.8 + 0.2 * pressure));
+    ctx.fillStyle = rt.pattern;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, TAU);
+    ctx.fill();
+  }
+
+  function patternWalk(rt, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.01) {
+      patternStamp(vctx, rt, a.x, a.y, a.p);
+      return;
+    }
+    const step = Math.max(0.8, rt.size * 0.12);
+    let t = step - rt.carry;
+    if (t < 0) t += step;
+    while (t <= dist) {
+      const k = t / dist;
+      patternStamp(vctx, rt, a.x + dx * k, a.y + dy * k, a.p + (b.p - a.p) * k);
       t += step;
     }
     rt.carry = (rt.carry + dist) % step;
@@ -740,11 +1748,12 @@
 
   function drawDot(rt, pt) {
     switch (rt.mode) {
-      case 'spray': sprayStamp(pctx, rt, pt.x, pt.y, pt.p); break;
-      case 'brush': brushStamp(pctx, rt, pt.x, pt.y, pt.p); break;
+      case 'spray': sprayStamp(rt.paint, rt, pt.x, pt.y, pt.p); break;
+      case 'brush': brushStamp(rt.paint, rt, pt.x, pt.y, pt.p, rt.angle == null ? -Math.PI / 4 : rt.angle); break;
       case 'marker': markerStamp(vctx, rt, pt.x, pt.y, pt.p); break;
       case 'pencil': solidDot(vctx, rt, pt); break;
-      case 'eraser': eraseDot(pctx, rt, pt); break;
+      case 'pattern': patternStamp(vctx, rt, pt.x, pt.y, pt.p); break;
+      case 'eraser': eraseDot(rt.paint, rt, pt); break;
     }
     rt.lastSample = pt;
     rt.carry = 0;
@@ -756,12 +1765,13 @@
       case 'brush': brushWalk(rt, a, b); break;
       case 'marker': markerWalk(rt, a, b); break;
       case 'pencil': solidSegment(vctx, rt, a, b); break;
-      case 'eraser': eraseSegment(pctx, rt, a, b); break;
+      case 'pattern': patternWalk(rt, a, b); break;
+      case 'eraser': eraseSegment(rt.paint, rt, a, b); break;
     }
   }
 
   function usesPreview(mode) {
-    return mode === 'marker' || mode === 'pencil';
+    return mode === 'marker' || mode === 'pencil' || mode === 'pattern';
   }
 
   function emitCurve(rt, a, c, b) {
@@ -862,11 +1872,12 @@
     rt.carry = 0;
   }
 
-  function composePreview(alpha) {
-    pctx.save();
-    pctx.globalAlpha = alpha;
-    pctx.drawImage(previewEl, 0, 0);
-    pctx.restore();
+  function composePreview(alpha, layer) {
+    const target = paintCtxs[clamp(layer == null ? state.layer : layer, 0, LAYER_COUNT - 1)];
+    target.save();
+    target.globalAlpha = alpha;
+    target.drawImage(previewEl, 0, 0);
+    target.restore();
     vctx.clearRect(0, 0, W, H);
   }
 
@@ -881,15 +1892,16 @@
     }
     finalizeStabilizer(rt);
     splineFlush(rt);
-    if (usesPreview(action.mode)) composePreview(action.alpha);
+    if (usesPreview(action.mode)) composePreview(action.alpha, action.layer);
   }
 
   function renderAll() {
-    pctx.clearRect(0, 0, W, H);
+    for (const ctx of paintCtxs) ctx.clearRect(0, 0, W, H);
     vctx.clearRect(0, 0, W, H);
     for (const action of undoHistory) {
       if (action.type === 'clear') {
-        pctx.clearRect(0, 0, W, H);
+        const ctx = paintCtxs[clamp(action.layer || 0, 0, LAYER_COUNT - 1)];
+        ctx.clearRect(0, 0, W, H);
         vctx.clearRect(0, 0, W, H);
         continue;
       }
@@ -899,6 +1911,7 @@
       }
       replayStroke(action);
     }
+    refreshLayerThumbs();
     updateUI();
   }
 
@@ -907,7 +1920,7 @@
     const action = drawing.action;
     finalizeStabilizer(drawing);
     splineFlush(drawing);
-    if (usesPreview(action.mode)) composePreview(action.alpha);
+    if (usesPreview(action.mode)) composePreview(action.alpha, action.layer);
     previewEl.style.opacity = '1';
     undoHistory.push(action);
     redoStack.length = 0;
@@ -916,6 +1929,7 @@
     activePointerId = null;
     strokeOutside = false;
     lastInside = null;
+    refreshLayerThumbs();
     updateUI();
   }
 
@@ -935,10 +1949,11 @@
 
   function clearWall() {
     if (isDrawing) return;
-    undoHistory.push({ type: 'clear' });
+    const layer = state.layer;
+    undoHistory.push({ type: 'clear', layer });
     redoStack.length = 0;
     renderAll();
-    showToast('Стена очищена — Ctrl+Z вернёт рисунок');
+    showToast(`${layers[layer].name} очищен — Ctrl+Z вернёт рисунок`);
   }
 
   // ---------- fill ----------
@@ -1071,23 +2086,27 @@
     }
 
     cx.putImageData(img, 0, 0);
-    pctx.save();
-    if (action.under) pctx.globalCompositeOperation = 'destination-over';
-    pctx.globalAlpha = action.alpha;
-    pctx.drawImage(cv, 0, 0);
-    pctx.restore();
+    const target = paintCtxs[clamp(action.layer == null ? state.layer : action.layer, 0, LAYER_COUNT - 1)];
+    target.save();
+    if (action.under) target.globalCompositeOperation = 'destination-over';
+    target.globalAlpha = action.alpha;
+    target.drawImage(cv, 0, 0);
+    target.restore();
   }
 
   function applyFill(pt) {
+    ensureActiveLayerVisible();
     const sx = clamp(Math.floor(pt.x), 0, W - 1);
     const sy = clamp(Math.floor(pt.y), 0, H - 1);
 
     const comp = makeCanvas();
     const compCtx = comp.getContext('2d', { willReadFrequently: true });
     compCtx.drawImage(wallEl, 0, 0);
-    compCtx.drawImage(paintEl, 0, 0);
+    for (let i = 0; i < LAYER_COUNT; i++) {
+      if (layers[i].visible) compCtx.drawImage(paintEls[i], 0, 0);
+    }
     const srcData = compCtx.getImageData(0, 0, W, H).data;
-    const paintData = pctx.getImageData(0, 0, W, H).data;
+    const paintData = paintCtxs[state.layer].getImageData(0, 0, W, H).data;
 
     const onPaint = paintData[(sy * W + sx) * 4 + 3] >= 12;
     const tol = onPaint ? estimateFillTolerance(srcData, sx, sy) : 150;
@@ -1099,10 +2118,18 @@
       return;
     }
 
-    const action = { type: 'fill', color: state.color, alpha: state.alpha, under: !onPaint, runs };
+    const action = {
+      type: 'fill',
+      color: state.color,
+      alpha: state.alpha,
+      under: !onPaint,
+      runs,
+      layer: state.layer
+    };
     undoHistory.push(action);
     redoStack.length = 0;
     paintFillAction(action);
+    refreshLayerThumbs();
     updateUI();
   }
 
@@ -1120,7 +2147,9 @@
     const out = makeCanvas();
     const g = out.getContext('2d');
     g.drawImage(getWallTexture(state.wall), 0, 0);
-    g.drawImage(paintEl, 0, 0);
+    for (let i = 0; i < LAYER_COUNT; i++) {
+      if (layers[i].visible) g.drawImage(paintEls[i], 0, 0);
+    }
 
     out.toBlob((blob) => {
       if (!blob) {
@@ -1343,6 +2372,7 @@
     if (!pt) return;
     e.preventDefault();
 
+    ensureActiveLayerVisible();
     activePointerId = e.pointerId;
     capturePointer(e.pointerId);
 
@@ -1353,6 +2383,9 @@
       size: state.size,
       alpha: state.alpha,
       smooth: state.smooth,
+      pattern: state.pattern,
+      brush: state.brush,
+      layer: state.layer,
       seed: (Math.random() * 2147483647) | 0,
       points: []
     };
@@ -1485,6 +2518,7 @@
     marker: 0.52,
     brush: 0.9,
     pencil: 0.1,
+    pattern: 1,
     eraser: 0.9
   };
 
@@ -1703,6 +2737,8 @@
     customInner.style.background = custom ? hex : '';
     customInner.textContent = custom ? '' : '+';
     updateCursorGeometry();
+    if (patternsOpen) renderPatternGrid();
+    if (brushesOpen) renderBrushGrid();
   }
 
   colorsEl.addEventListener('click', (e) => {
@@ -1727,8 +2763,418 @@
   }
 
   document.querySelectorAll('.tool[data-mode]').forEach((b) => {
-    b.addEventListener('click', () => setMode(b.dataset.mode));
+    b.addEventListener('click', () => {
+      if (b.dataset.mode === 'pattern') openPatterns();
+      else if (b.dataset.mode === 'brush') openBrushes();
+      else setMode(b.dataset.mode);
+    });
   });
+
+  // ---------- pattern picker ----------
+
+  const patternsEl = document.getElementById('patternsModal');
+  const patternsGrid = document.getElementById('patternsGrid');
+  const patternsClose = document.getElementById('patternsClose');
+  let patternsOpen = false;
+  let patternsReturnFocus = null;
+
+  function drawPatternThumb(canvas, def) {
+    const g = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    g.clearRect(0, 0, w, h);
+    const pat = g.createPattern(getPatternTile(def, state.color), 'repeat');
+    if (!pat) return;
+    const s = (88 * def.zoom / 2) / PATTERN_TILE;
+    if (typeof pat.setTransform === 'function' && typeof DOMMatrix === 'function') {
+      pat.setTransform(new DOMMatrix([s, 0, 0, s, 0, 0]));
+    }
+    const cy = h / 2;
+    const radius = 24;
+    const curveY = (x) => cy - Math.sin(((x - 26) / (w - 52)) * Math.PI) * 9;
+
+    g.save();
+    g.globalAlpha = 0.14;
+    g.strokeStyle = state.color;
+    g.lineWidth = radius * 2;
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    g.beginPath();
+    for (let x = 26; x <= w - 26; x += 5) {
+      if (x === 26) g.moveTo(x, curveY(x));
+      else g.lineTo(x, curveY(x));
+    }
+    g.stroke();
+    g.restore();
+
+    g.fillStyle = pat;
+    for (let x = 26; x <= w - 26; x += 5) {
+      g.beginPath();
+      g.arc(x, curveY(x), radius, 0, TAU);
+      g.fill();
+    }
+  }
+
+  function renderPatternGrid() {
+    if (!patternsGrid) return;
+    patternsGrid.innerHTML = '';
+    for (const def of PATTERNS) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'pattern-card';
+      card.dataset.pattern = def.id;
+      card.title = def.name;
+      const selected = state.pattern === def.id;
+      card.classList.toggle('is-selected', selected);
+      card.setAttribute('aria-pressed', selected ? 'true' : 'false');
+
+      const cv = document.createElement('canvas');
+      cv.className = 'pattern-thumb';
+      cv.width = 168;
+      cv.height = 100;
+      drawPatternThumb(cv, def);
+
+      const label = document.createElement('span');
+      label.className = 'pattern-name';
+      label.textContent = def.name;
+
+      card.append(cv, label);
+      patternsGrid.appendChild(card);
+    }
+  }
+
+  function openPatterns() {
+    if (!patternsEl || patternsOpen || brushesOpen) return;
+    if (layersOpen) closeLayers();
+    const active = document.activeElement;
+    patternsReturnFocus = active && active !== document.body
+      ? active
+      : document.querySelector('.tool[data-mode="pattern"]');
+    renderPatternGrid();
+    patternsOpen = true;
+    patternsEl.classList.add('is-open');
+    patternsEl.setAttribute('aria-hidden', 'false');
+    setCursorVisible(false);
+    if (patternsClose) patternsClose.focus();
+  }
+
+  function closePatterns() {
+    if (!patternsEl || !patternsOpen) return;
+    patternsOpen = false;
+    patternsEl.classList.remove('is-open');
+    const target = patternsReturnFocus && patternsReturnFocus !== document.body
+      ? patternsReturnFocus
+      : document.querySelector('.tool[data-mode="pattern"]');
+    patternsReturnFocus = null;
+    if (target && typeof target.focus === 'function') target.focus();
+    patternsEl.setAttribute('aria-hidden', 'true');
+  }
+
+  function choosePattern(id) {
+    const def = PATTERN_MAP.get(id);
+    if (!def) return;
+    state.pattern = id;
+    setMode('pattern');
+    closePatterns();
+    showToast(`Паттерн: ${def.name}`);
+  }
+
+  if (patternsEl) {
+    patternsEl.addEventListener('click', (e) => {
+      const card = e.target.closest('.pattern-card');
+      if (card) {
+        choosePattern(card.dataset.pattern);
+        return;
+      }
+      if (e.target === patternsEl || e.target.closest('[data-close]')) closePatterns();
+    });
+  }
+
+  // ---------- brush picker ----------
+
+  const brushesEl = document.getElementById('brushesModal');
+  const brushesGrid = document.getElementById('brushesGrid');
+  const brushesClose = document.getElementById('brushesClose');
+  let brushesOpen = false;
+  let brushesReturnFocus = null;
+
+  function drawBrushThumb(canvas, def) {
+    const g = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    g.clearRect(0, 0, w, h);
+    const rt = {
+      color: state.color,
+      size: 44,
+      alpha: 1,
+      rng: mulberry32(4211),
+      brush: def,
+      angle: null
+    };
+    const x0 = 22;
+    const x1 = w - 22;
+    const cy = h / 2 + 2;
+    const amp = 12;
+    const k = (Math.PI * 1.15) / (x1 - x0);
+    const curveY = (x) => cy - Math.sin((x - x0) * k) * amp;
+    const step = Math.max(1.4, rt.size * def.spacing);
+    for (let x = x0; x <= x1; x += step) {
+      const slope = -amp * k * Math.cos((x - x0) * k);
+      const t = (x - x0) / (x1 - x0);
+      def.stamp(g, rt, x, curveY(x), 0.7 + 0.3 * Math.sin(t * Math.PI), Math.atan2(slope, 1));
+    }
+  }
+
+  function renderBrushGrid() {
+    if (!brushesGrid) return;
+    brushesGrid.innerHTML = '';
+    for (const def of BRUSHES) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'pattern-card';
+      card.dataset.brush = def.id;
+      card.title = def.name;
+      const selected = state.brush === def.id;
+      card.classList.toggle('is-selected', selected);
+      card.setAttribute('aria-pressed', selected ? 'true' : 'false');
+
+      const cv = document.createElement('canvas');
+      cv.className = 'pattern-thumb';
+      cv.width = 168;
+      cv.height = 100;
+      drawBrushThumb(cv, def);
+
+      const label = document.createElement('span');
+      label.className = 'pattern-name';
+      label.textContent = def.name;
+
+      card.append(cv, label);
+      brushesGrid.appendChild(card);
+    }
+  }
+
+  function openBrushes() {
+    if (!brushesEl || brushesOpen || patternsOpen) return;
+    if (layersOpen) closeLayers();
+    const active = document.activeElement;
+    brushesReturnFocus = active && active !== document.body
+      ? active
+      : document.querySelector('.tool[data-mode="brush"]');
+    renderBrushGrid();
+    brushesOpen = true;
+    brushesEl.classList.add('is-open');
+    brushesEl.setAttribute('aria-hidden', 'false');
+    setCursorVisible(false);
+    if (brushesClose) brushesClose.focus();
+  }
+
+  function closeBrushes() {
+    if (!brushesEl || !brushesOpen) return;
+    brushesOpen = false;
+    brushesEl.classList.remove('is-open');
+    const target = brushesReturnFocus && brushesReturnFocus !== document.body
+      ? brushesReturnFocus
+      : document.querySelector('.tool[data-mode="brush"]');
+    brushesReturnFocus = null;
+    if (target && typeof target.focus === 'function') target.focus();
+    brushesEl.setAttribute('aria-hidden', 'true');
+  }
+
+  function chooseBrush(id) {
+    const def = BRUSH_MAP.get(id);
+    if (!def) return;
+    state.brush = id;
+    setMode('brush');
+    const tool = document.querySelector('.tool[data-mode="brush"]');
+    if (tool) tool.title = `Кисть: ${def.name} — B`;
+    closeBrushes();
+    showToast(`Кисть: ${def.name}`);
+  }
+
+  if (brushesEl) {
+    brushesEl.addEventListener('click', (e) => {
+      const card = e.target.closest('.pattern-card');
+      if (card && card.dataset.brush) {
+        chooseBrush(card.dataset.brush);
+        return;
+      }
+      if (e.target === brushesEl || e.target.closest('[data-close]')) closeBrushes();
+    });
+  }
+
+  // ---------- layers ----------
+
+  let layersOpen = false;
+  let layersReturnFocus = null;
+
+  function updateLayerBadge() {
+    if (!layersBadge) return;
+    layersBadge.textContent = String(state.layer + 1);
+    if (layersBtn) {
+      layersBtn.setAttribute('aria-label', `Слои, активный ${layers[state.layer].name}`);
+    }
+  }
+
+  function eyeIcon(visible) {
+    return visible
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 6.1A10.9 10.9 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3 3.7"/><path d="M6.6 6.8A17.3 17.3 0 0 0 2.5 12s3.5 6 9.5 6a10.6 10.6 0 0 0 4-.8"/></svg>';
+  }
+
+  function drawLayerThumb(canvas, index) {
+    const g = canvas.getContext('2d');
+    g.clearRect(0, 0, canvas.width, canvas.height);
+    g.drawImage(paintEls[index], 0, 0, canvas.width, canvas.height);
+  }
+
+  function updateLayerRow(index) {
+    if (!layersList) return;
+    const row = layersList.querySelector(`.layer-row[data-layer="${index}"]`);
+    if (!row) return;
+    row.classList.toggle('is-active', state.layer === index);
+    row.classList.toggle('is-hidden', !layers[index].visible);
+    row.setAttribute('aria-pressed', state.layer === index ? 'true' : 'false');
+    const eye = row.querySelector('.layer-eye');
+    if (eye) {
+      eye.innerHTML = eyeIcon(layers[index].visible);
+      eye.setAttribute('aria-pressed', layers[index].visible ? 'true' : 'false');
+      eye.setAttribute('aria-label', `${layers[index].visible ? 'Скрыть' : 'Показать'} ${layers[index].name}`);
+    }
+    const meta = row.querySelector('.layer-meta');
+    if (meta) meta.textContent = layers[index].visible ? 'виден' : 'скрыт';
+  }
+
+  function renderLayerRows() {
+    if (!layersList) return;
+    layersList.innerHTML = '';
+    for (let i = LAYER_COUNT - 1; i >= 0; i--) {
+      const row = document.createElement('div');
+      row.className = 'layer-row';
+      row.dataset.layer = String(i);
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+      row.setAttribute('aria-pressed', i === state.layer ? 'true' : 'false');
+
+      const eye = document.createElement('button');
+      eye.type = 'button';
+      eye.className = 'layer-eye';
+      eye.innerHTML = eyeIcon(layers[i].visible);
+      eye.setAttribute('aria-pressed', layers[i].visible ? 'true' : 'false');
+      eye.setAttribute('aria-label', `${layers[i].visible ? 'Скрыть' : 'Показать'} ${layers[i].name}`);
+
+      const thumb = document.createElement('canvas');
+      thumb.className = 'layer-thumb';
+      thumb.width = 56;
+      thumb.height = 35;
+      thumb.dataset.layer = String(i);
+      drawLayerThumb(thumb, i);
+
+      const info = document.createElement('div');
+      info.className = 'layer-info';
+      const name = document.createElement('span');
+      name.className = 'layer-name';
+      name.textContent = layers[i].name;
+      const meta = document.createElement('span');
+      meta.className = 'layer-meta';
+      meta.textContent = layers[i].visible ? 'виден' : 'скрыт';
+      info.append(name, meta);
+
+      row.append(eye, thumb, info);
+      layersList.appendChild(row);
+      updateLayerRow(i);
+    }
+  }
+
+  function refreshLayerThumbs() {
+    if (!layersOpen || !layersList) return;
+    layersList.querySelectorAll('canvas.layer-thumb').forEach((cv) => {
+      drawLayerThumb(cv, Number(cv.dataset.layer));
+    });
+  }
+
+  function setLayerVisible(index, visible) {
+    if (!layers[index]) return;
+    layers[index].visible = visible;
+    paintEls[index].classList.toggle('is-hidden', !visible);
+    updateLayerRow(index);
+    updateLayerBadge();
+  }
+
+  function setActiveLayer(index) {
+    if (index < 0 || index >= LAYER_COUNT) return;
+    state.layer = index;
+    for (let i = 0; i < LAYER_COUNT; i++) updateLayerRow(i);
+    updateLayerBadge();
+    showToast(`${layers[index].name} — активный`);
+  }
+
+  function ensureActiveLayerVisible() {
+    if (layers[state.layer].visible) return;
+    setLayerVisible(state.layer, true);
+    showToast(`${layers[state.layer].name} снова виден`);
+  }
+
+  function openLayers() {
+    if (!layersPop || layersOpen) return;
+    const active = document.activeElement;
+    layersReturnFocus = active && active !== document.body ? active : layersBtn;
+    renderLayerRows();
+    layersOpen = true;
+    layersPop.classList.add('is-open');
+    layersPop.setAttribute('aria-hidden', 'false');
+    layersBtn.classList.add('is-open');
+    layersBtn.setAttribute('aria-expanded', 'true');
+    setCursorVisible(false);
+  }
+
+  function closeLayers() {
+    if (!layersPop || !layersOpen) return;
+    layersOpen = false;
+    layersPop.classList.remove('is-open');
+    layersPop.setAttribute('aria-hidden', 'true');
+    layersBtn.classList.remove('is-open');
+    layersBtn.setAttribute('aria-expanded', 'false');
+    const target = layersReturnFocus || layersBtn;
+    layersReturnFocus = null;
+    if (target && typeof target.focus === 'function') target.focus();
+  }
+
+  if (layersBtn) {
+    layersBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (layersOpen) closeLayers();
+      else openLayers();
+    });
+  }
+
+  if (layersList) {
+    layersList.addEventListener('click', (e) => {
+      const eye = e.target.closest('.layer-eye');
+      if (eye) {
+        const row = eye.closest('.layer-row');
+        const i = Number(row.dataset.layer);
+        setLayerVisible(i, !layers[i].visible);
+        showToast(`${layers[i].name} ${layers[i].visible ? 'показан' : 'скрыт'}`);
+        return;
+      }
+      const row = e.target.closest('.layer-row');
+      if (row) setActiveLayer(Number(row.dataset.layer));
+    });
+    layersList.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const row = e.target.closest('.layer-row');
+      if (!row || e.target.closest('.layer-eye')) return;
+      e.preventDefault();
+      setActiveLayer(Number(row.dataset.layer));
+    });
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    if (!layersOpen) return;
+    if (layersPop && layersPop.contains(e.target)) return;
+    if (layersBtn && layersBtn.contains(e.target)) return;
+    closeLayers();
+  }, true);
 
   document.querySelectorAll('.wall-btn').forEach((b) => {
     b.addEventListener('click', () => setWall(b.dataset.wall));
@@ -1770,10 +3216,13 @@
   function isTypingTarget(el) {
     if (!el) return false;
     const tag = el.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || el.isContentEditable;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON'
+      || el.isContentEditable
+      || (typeof el.getAttribute === 'function' && el.getAttribute('role') === 'button');
   }
 
   window.addEventListener('keydown', (e) => {
+    if (patternsOpen || brushesOpen) return;
     if (e.code !== 'Space' || isTypingTarget(e.target)) return;
     if (!spaceDown) {
       spaceDown = true;
@@ -1790,6 +3239,21 @@
   });
 
   document.addEventListener('keydown', (e) => {
+    if (patternsOpen || brushesOpen) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (patternsOpen) closePatterns();
+        else closeBrushes();
+      }
+      return;
+    }
+
+    if (layersOpen && e.key === 'Escape') {
+      e.preventDefault();
+      closeLayers();
+      return;
+    }
+
     const tag = e.target && e.target.tagName;
     if (tag === 'TEXTAREA' || tag === 'SELECT') return;
     if (tag === 'INPUT' && e.target.type === 'text') return;
@@ -1820,11 +3284,13 @@
     switch (e.code) {
       case 'KeyS': setMode('spray'); break;
       case 'KeyM': setMode('marker'); break;
-      case 'KeyB': setMode('brush'); break;
+      case 'KeyB': openBrushes(); break;
       case 'KeyP': setMode('pencil'); break;
+      case 'KeyT': openPatterns(); break;
       case 'KeyF': setMode('fill'); break;
       case 'KeyE': setMode('eraser'); break;
       case 'KeyH': setMode('pan'); break;
+      case 'KeyL': if (layersOpen) closeLayers(); else openLayers(); break;
       default:
         if (/^Digit[1-9]$/.test(e.code)) {
           const idx = Number(e.code.slice(5)) - 1;
@@ -1873,6 +3339,7 @@
   fitStage();
   setWall('brick');
   setColor('#ff2e63', false);
+  updateLayerBadge();
   sizeVal.textContent = String(state.size);
   alphaVal.textContent = `${Math.round(state.alpha * 100)}%`;
   smoothVal.textContent = `${Math.round(state.smooth * 100)}%`;
